@@ -87,9 +87,8 @@ class PayPalDouble(_Double):
         self.tokens: set[str] = set()
         self.capture_override: dict[str, dict] = {}  # order id -> fields to tamper in the capture response
         # PayPal answers create-order with a minimal body (id, status, links) unless the request sends
-        # "Prefer: return=representation". True returns the full order regardless: an ACCOMMODATION for open
-        # defect C-4b (the canonical adapter does not send the header but validates purchase_units). Remove it
-        # when the adapter is fixed; test_order_creation_against_paypal_default_response then XPASSes.
+        # "Prefer: return=representation" (PayPal's documented default). Keep this False: it is what makes the
+        # e2e suite catch a regression of C-4b. True exists only to diagnose other failures.
         self.assume_representation = False
 
     def _authorized(self, headers) -> bool:

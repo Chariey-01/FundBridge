@@ -8,7 +8,7 @@ Status key: **Not started**, **Configured** (credentials set, no successful real
 |---|---|---|
 | OpenAI | Not started (no key) | None |
 | Africa's Talking | Not started (no account) | None |
-| PayPal | Not started (no sandbox credentials) | **C-4b**: order creation fails against PayPal's default response (see below) |
+| PayPal | Not started (no sandbox credentials) | None for the sandbox flow (C-4b fixed in `feat/backend-core` b45ee29; `main` needs that commit). R-2/S-5 return 500 on concurrent retries (money safe). |
 | Payout provider | Not started (no provider chosen) | No submission or callback endpoint exists yet |
 
 ## OpenAI
@@ -39,7 +39,7 @@ Full details and the step-by-step procedure: [`africastalking.md`](africastalkin
 1. **Sandbox app:** at developer.paypal.com, go to Apps & Credentials → Sandbox → create an app. Set `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com`.
 2. **Webhook:** add `https://<backend>/api/v1/webhooks/paypal` for `PAYMENT.CAPTURE.COMPLETED`, then set `PAYPAL_WEBHOOK_ID`. The backend verifies every event with PayPal's verify-webhook-signature API and rejects anything unverified. Trigger it with a real sandbox payment.
 3. **Order creation:** `POST /api/v1/donations/orders` → `201` with an `approval_url` on sandbox.paypal.com.
-   **Blocked by C-4b** until the canonical adapter sends `Prefer: return=representation` on create-order. PayPal's default response omits `purchase_units`, which the backend now validates, so this returns `400 PAYMENT_ORDER_MISMATCH`. The reproductions are in `COORDINATION.md`.
+   The adapter sends `Prefer: return=representation` (C-4b, fixed in `feat/backend-core` b45ee29; deploy from a branch that contains it). Expect the response to echo the donation id and amount.
 4. **Approval and capture:** approve with a sandbox personal account. The return page calls capture and then `GET /donations/{id}` → `completed`. `GET /campaigns/{id}/funds` shows the amount raised once.
 5. **Ambiguous capture reconciliation:**
    - `POST /api/v1/donations/{id}/reconcile` on the completed donation returns it unchanged, with no second credit.

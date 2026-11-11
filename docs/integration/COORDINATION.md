@@ -1,47 +1,51 @@
 # Coordination notes: Claude (AI, feature phones, integration tests, deployment docs) → Codex (backend) and Cursor (frontend)
 
 Branch `feat/ai-integration-qa` (PR #3) is stacked on `feat/backend-core` (PR #2) and merges it regularly. PR #3 stays separate until the canonical backend is ready.
-Last merged backend commit: `6fd76b3` (feat/backend-core after PR #3 merged), plus `9d3f80c`. PR #2 merged into `main` (backend through `3edf6c4`); PR #3 merged into `feat/backend-core`. `main` does not yet contain PR #3.
-This branch is byte-identical to `feat/backend-core` in every backend-owned file; only tests and docs differ.
+Last merged backend commit: **`b45ee29`** (feat/backend-core). `main` contains the backend through `6fd76b3` plus this branch up to `0b12b4c` (PRs #4, #5, #6); **`main` does not yet contain `b45ee29`**, so it still has C-4b and X-1.
+This branch is byte-identical to `feat/backend-core` in every backend-owned file; only tests, docs and `contracts/` differ. Full evidence: `VERIFICATION_CHECKLIST.md`.
 
 ## For Codex (canonical backend)
 
-### Status of every tracked item (reviewed against `feat/backend-core` 6fd76b3)
+### Status of every tracked item against `b45ee29`
 
-| ID | Item | Status | Evidence on this branch |
-|---|---|---|---|
-| C-4 | PayPal `reference_id` must be the donation id | **Fixed** (b7bf45b flush) | `test_paypal_order_carries_the_donation_id_as_reference` passes |
-| **C-4b** | **create-order response validation vs PayPal's default response** | **Open, blocks all real PayPal orders** | strict xfail ×2 (below) |
-| R-1 | Ambiguous capture reconciliation | Fixed (ee43660) | e2e `test_reconcile_after_provider_side_capture_completes_donation_once` |
-| R-1b | Pending capture must stay pending during reconcile | Fixed (b7bf45b) | e2e `test_reconcile_with_pending_capture_stays_pending` |
-| — | Declined/denied capture, cancelled order → failed | Added (9d3f80c) | e2e `test_reconcile_with_declined_capture_marks_donation_failed` |
-| M-1 | Upgrade with existing donations | Fixed (ee43660) | `test_upgrade_preserves_existing_financial_data` (SQLite + PostgreSQL, every financial row identical) |
-| M-1b | Old global idempotency-key uniqueness survives upgrade | Open | strict xfail `test_upgrade_from_original_initial_schema_drops_global_key_uniqueness` |
-| M-2 | PostgreSQL full rollback leaves enum types | Open | strict xfail `test_full_downgrade_then_upgrade[postgresql]` |
-| P-1 | Phone change forces reverification | Fixed (3edf6c4) | `test_phone_change_requires_reverification`, phone-channel tests |
-| C-3 | Onboarding audit | Ported (3edf6c4), but see **X-1** | strict xfail |
-| — | Keyword search | Ported (3edf6c4), but see **X-2** | strict xfail; `test_keyword_search_without_ai` passes |
-| **X-1** | **Duplicate onboarding audit (merge artifact)** | **Open** | strict xfail `test_assisted_onboarding_is_audited` |
-| **X-2** | **Duplicate `?q=` filters (merge artifact)** | **Open** | strict xfail `test_keyword_search_matches_category_as_ported` |
+| ID | Item | Status |
+|---|---|---|
+| C-4, C-4b | PayPal reference and `Prefer: return=representation` | **Fixed**, verified over HTTP with a PayPal-default double |
+| R-1, R-1b, declined capture | Reconciliation | Fixed and verified |
+| X-1 | Duplicate onboarding audit | **Fixed** (b45ee29), verified |
+| P-1 | Phone reverification | Fixed, verified |
+| M-1 | Upgrade with existing data | Fixed, verified on SQLite and PostgreSQL |
+| **X-2** | Two `?q=` filters ANDed in `list_campaigns()` | **Open**: strict xfail `test_keyword_search_matches_category_as_ported` |
+| **R-2** | Parallel reconciles → HTTP 500 | **Open, new**: see below |
+| **S-5** | Parallel same-key orders → HTTP 500 instead of replay | **Open, new**: see below |
+| M-1b | Old global idempotency uniqueness survives upgrade | Open: strict xfail |
+| M-2 | PostgreSQL full rollback leaves enum types | Open: strict xfail |
 
-### C-4b (critical): PayPal order creation fails against PayPal's default response
-- Where: `backend/app/api/v1/routes.py` `donation_order()` (b7bf45b) requires `order["purchase_units"][0]` with `reference_id`, `amount.currency_code` and `amount.value` in the **create-order response**. `backend/app/integrations/payments/paypal.py` `create_order()` sends no `Prefer` header. PayPal documents `Prefer: return=minimal` as the default, which returns only `id`, `status` and `links`; the full order requires `Prefer: return=representation`. Result: every real order → `400 PAYMENT_ORDER_MISMATCH`.
-- Why your suite passes: `test_api_safety.py` mocks `create_order` to return `purchase_units`.
-- Reproduce: `pytest tests/integration/test_live_found_defects.py::test_paypal_default_minimal_create_order_response_is_accepted --runxfail` (mocked minimal response) and `pytest tests/e2e/test_journeys.py::test_order_creation_against_paypal_default_response --runxfail` (live HTTP; the PayPal double honours `Prefer` like PayPal).
-- Suggested fix, validated locally and not committed: add `"Prefer": "return=representation"` to the create-order request headers. Both reproductions then XPASS. Alternatively, drop the response check; capture and reconcile already verify the reference and amount.
-- Note: until this is fixed, the e2e stacks run with a labelled accommodation (`PayPalDouble.assume_representation = True`) so downstream journeys stay testable. It is removed when C-4b is fixed.
+### R-2 (medium, new): parallel reconciliations return HTTP 500
+- Where: `backend/app/api/v1/routes.py` `reconcile_donation()`. Two requests both read `pending`, both call `mark_donation_completed`, and the second `db.session.commit()` raises `IntegrityError` (`UniqueViolation` on the ledger credit).
+- Money is safe: the unique constraints keep it to one credit, and the e2e test checks that. But clients get `500 INTERNAL_ERROR` for a benign race, and the logs fill with errors.
+- Reproduce on PostgreSQL: `E2E_DATABASE_URL=... pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_reconciliations_never_return_500 --runxfail` → 7 of 8 responses are 500.
+- Suggestion: lock the donation row (`with_for_update()`) and re-check its status before calling the provider, or catch `IntegrityError`, roll back, re-read and return the donation. Capture has the same shape: it only avoids the race today because PayPal answers repeat captures with 422.
 
-### X-1 and X-2: merge artifacts from PR #3 into `feat/backend-core` (6fd76b3)
-Both the integration-branch fixes and your ports (3edf6c4) survived the merge:
-- **X-1** `assisted_beneficiary()`: two `AuditLog(action="beneficiary.onboarded")` writes, the one-line version with `metadata_json` and your two-line version. Each onboarding creates two audit rows.
-- **X-2** `list_campaigns()`: two `?q=` filters ANDed together. The first (escaped, title/description, 100-character cap) excludes rows your second filter would match by category, so `?q=education` never finds an education campaign by category.
-- Suggested fix, validated locally and not committed: delete one block of each pair. Both reproductions then XPASS. Please keep the wildcard escaping and the 100-character cap in whichever search filter remains: `test_keyword_search_without_ai` asserts that `%` and `_` match literally.
+### S-5 (medium, new): parallel orders with one Idempotency-Key return HTTP 500
+- Where: `routes.py` `donation_order()` at `db.session.add(donation); db.session.flush()`. On PostgreSQL the second insert waits for the first transaction, then raises `UniqueViolation` on `uq_donation_donor_idempotency`.
+- Exactly one donation is created, which is correct, but the other callers get 500 instead of the replayed donation the contract promises. A double-clicked "Donate" button or a retried request on a slow network hits this.
+- Reproduce: `pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_orders_with_one_key_replay_instead_of_500 --runxfail` (PostgreSQL) → 7 of 8 are 500.
+- Suggestion: on `IntegrityError` at that flush, roll back, re-select by `(donor_id, idempotency_key)`, check the fingerprint, and return the existing donation. The PayPal order created by the losing request is never used.
+
+### X-2: duplicate search filters
+`list_campaigns()` applies both the escaped title/description filter and the ported title/description/category filter. Delete one, keep the escaping and the 100-character cap (`test_keyword_search_without_ai`), and keep category matching if wanted (`test_keyword_search_matches_category_as_ported`).
+
+### API gaps found while reviewing the frontend contract (not defects, missing capabilities)
+- **G-6:** a beneficiary cannot list the campaigns they benefit from. `serialize_campaign` has no `beneficiary_id`, and `/me/campaigns` returns campaigns the user *created*. The web payout-request screen therefore cannot find a `campaign_id`. Suggestion: `GET /beneficiaries/me/campaigns`, or `beneficiary_id` in the campaign payload.
+- **G-7:** there is no reviewer queue; `GET /campaigns` lists only published campaigns. Suggestion: `GET /campaigns?status=submitted` for reviewers and admins.
+- **G-8:** no lookup by `slug`, no pagination beyond 50 results, and no timestamps (`created_at`, `published_at`) in campaign, donation and payout payloads.
 
 ### M-1b and M-2
-Unchanged; see the strict-xfail tests in `tests/integration/test_migrations.py`. Manual M-1b check: build a database from `git archive 1a3a9d9 backend/migrations`, upgrade it with today's migrations, and `donation_idempotency_key_key` and `payout_idempotency_key_key` are still present.
+Unchanged; see the strict xfails in `tests/integration/test_migrations.py`.
 
 ### Migration chain
-The head is `c3f1a9e7d2b4` (messaging tables, revising `d7f2b35d0ed5`). Chain any new migration after it; `test_single_alembic_head` catches a second head.
+The head is `c3f1a9e7d2b4`. Chain new migrations after it; `test_single_alembic_head` guards this.
 
 ## For Cursor (frontend)
 

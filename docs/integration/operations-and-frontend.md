@@ -43,13 +43,57 @@ Use `contracts/fundbridge-client.ts` (consumption steps: `contracts/README.md`).
 | Donate | `createDonationOrder` → redirect to `approval_url` → return page → `completePayPalReturn` (capture, then reconcile if ambiguous, then re-read) | `confirmed` (success), `not_approved` (donor did not finish at PayPal), `provider_unavailable` (re-check later), `needs_review` (contact support, quote `error.requestId`), `pending` |
 | My donations | `myDonations` + `presentDonation` | Only `completed` is success |
 | Creator: new campaign | optional `draftCampaign` (suggestion only, shows `warnings`), then `createCampaign`, `updateCampaign`, `submitCampaign` | `draft` → `submitted` → `published`, or back to `draft` with `review_status: rejected` |
-| Reviewer queue | `reviewCampaign`, `listBeneficiaries("unverified" / "reverification_required")`, `getBeneficiary`, `decideVerification(id, decision, revision)` | `409 PROFILE_CHANGED`: reload the profile and review again |
+| Reviewer queue | `reviewCampaign` (by id only; **no endpoint lists submitted campaigns**, gap G-7), `listBeneficiaries("unverified" / "reverification_required")`, `getBeneficiary`, `decideVerification(id, decision, revision)` | `409 PROFILE_CHANGED`: reload the profile and review again |
 | Agent: onboard beneficiary | `onboardBeneficiary` | New profiles are `unverified` until a reviewer decides |
-| Beneficiary dashboard | `myBeneficiaryProfile`, `campaignFunds` (full), `listPayouts`, `requestPayout`, `presentPayout` | `BENEFICIARY_NOT_VERIFIED`, `INSUFFICIENT_AVAILABLE_FUNDS`, `PAYOUT_DESTINATION_UNVERIFIED`; editing phone or destination returns `reverification_required` |
+| Beneficiary dashboard | `myBeneficiaryProfile`, `campaignFunds` (full), `listPayouts`, `requestPayout`, `presentPayout`. **No endpoint lists the beneficiary's campaigns** (gap G-6), so the payout form cannot discover a `campaign_id` until the backend adds one | `BENEFICIARY_NOT_VERIFIED`, `INSUFFICIENT_AVAILABLE_FUNDS`, `PAYOUT_DESTINATION_UNVERIFIED`; editing phone or destination returns `reverification_required` |
 | Admin: people | `findAccounts`, `assignRole` | `403 SELF_ROLE_CHANGE_FORBIDDEN` |
 | Status banner | `publicConfig`, `integrationStatus` → `channelModes` (or `channelBanner` in the examples) | Simulated/sandbox labels; AI "not responding" when `last_error` and not `model_verified` |
 | Agent: phone support | `supportRequests`, admin `resetPhonePin` | Phone numbers are personal data: show them to staff only |
 | Demo phone simulator | `simulateUssd`, `simulateSms`, `simulatorOutbox` (404 unless enabled) | Always show the server's `meta.notice` and a "SIMULATED" badge |
+
+## API contract review: what the frontend must not assume (backend `b45ee29`)
+
+`feat/frontend-core` has not been published, so this is a review from the API side. Check it against the frontend once the branch is visible.
+
+**Safe to use now:**
+- **AI** (see `ai-messaging-api.md`):
+  - `GET /ai/status` (public);
+  - `POST /ai/campaign-search` (public, 20/min per IP; returns real catalog campaigns only);
+  - `POST /ai/translate` (public; `503 AI_UNAVAILABLE` without a provider);
+  - `POST /ai/campaign-draft` and `POST /ai/beneficiary-assistant` (signed in, 10/min per user).
+
+  Every AI response has `meta.ai_generated`/`degraded`; show a suggestion only, and never block the form.
+- **Feature phones (web side):**
+  - `GET /integrations/status` for banners;
+  - `GET /messaging/support-requests` (agent, admin);
+  - `POST /messaging/beneficiaries/{id}/pin-reset` (admin).
+
+  The simulator endpoints are 404 unless enabled, and are always labelled simulated.
+
+**Explain in the UI:**
+- USSD/SMS answer only numbers on a verified beneficiary profile. After a phone or payout-destination change, the beneficiary must be re-verified.
+- The USSD PIN is created on the handset; staff cannot see it, only reset it.
+- SMS delivery is never shown as confirmed.
+
+**Not supported. Do not build against these:**
+- refresh tokens, logout or revocation (tokens last 15 minutes);
+- password reset or email verification;
+- guest (anonymous) donations;
+- campaign images or media;
+- editing goal or currency after creation (`PATCH` changes only title, description and category, and only in draft);
+- closing a campaign;
+- slug lookup (G-8);
+- pagination beyond 50;
+- payout submission or settlement (payouts stop at `approved_for_submission`);
+- a beneficiary's own campaign list (G-6);
+- a reviewer queue of submitted campaigns (G-7).
+
+**Payload notes:**
+- Campaign create takes flat `goal_amount`/`goal_currency`, but responses nest `goal: {amount, currency}`.
+- Campaign, donation and payout payloads have no timestamps.
+- Donation history has `campaign_id` only (fetch titles separately).
+- `GET /public/config` always reports `feature_phone: {sms: false, ussd: false}`; use `/integrations/status`.
+- AI drafts return `title`, `summary`, `story` and `suggested_category`; the campaign has no summary field, so put the story in `description`.
 
 ## Endpoints added on this branch
 
@@ -74,7 +118,8 @@ Use `contracts/fundbridge-client.ts` (consumption steps: `contracts/README.md`).
 | 429 | `RATE_LIMITED` | `Retry-After` header and `details.retry_after_seconds` |
 | 502 | `PROVIDER_REQUEST_REJECTED` | PayPal refused (`details.provider_status`, `details.provider_issue`, e.g. `ORDER_NOT_APPROVED`) |
 | 503 | `PROVIDER_UNAVAILABLE` | PayPal unreachable or timed out; the donation may or may not have been captured, so reconcile and re-read it |
-| 400 | `PAYMENT_ORDER_MISMATCH` (from create order) | The provider's order does not match the donation. Open item C-4b: currently returned for every real PayPal order |
+| 400 | `PAYMENT_ORDER_MISMATCH` (from create order) | The provider's order does not match the donation (amount, currency or reference). Nothing is stored; show a retry |
+| 500 | `INTERNAL_ERROR` on a retried order or reconcile | Open items S-5/R-2: a concurrent retry can return 500 although the donation exists. Re-read with `myDonations`/`getDonation` before showing an error |
 | 405 | `METHOD_NOT_ALLOWED` | Envelope instead of HTML |
 | 500 | `INTERNAL_ERROR` | `details.request_id` for support |
 

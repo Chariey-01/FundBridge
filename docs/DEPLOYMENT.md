@@ -66,7 +66,7 @@ Step-by-step verification and evidence for every provider: [`docs/integration/EX
 ### PayPal (sandbox)
 1. developer.paypal.com → Apps & Credentials → Sandbox → create an app → copy the client ID and secret.
 2. Add a webhook for `https://<backend-host>/api/v1/webhooks/paypal` with event `PAYMENT.CAPTURE.COMPLETED`, then copy its ID into `PAYPAL_WEBHOOK_ID`.
-3. Keep `PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com`. Known blocker: order creation fails against PayPal's default response until open item C-4b is fixed (see `COORDINATION.md`).
+3. Keep `PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com`. Deploy from a commit that contains `feat/backend-core` b45ee29 (C-4b: create-order must send `Prefer: return=representation`).
 4. Pay with a sandbox personal account. The frontend calls `POST /donations/{id}/capture` on return, then trusts only `GET /donations/{id}` (see `FundBridgeClient.completePayPalReturn`).
 5. Configure the webhook even if capture-on-return works. If a capture times out, the payment may already be captured at PayPal: `POST /donations/{id}/reconcile` (the client calls it automatically) reads the order from PayPal and credits a verified capture once, and the webhook does the same independently.
 

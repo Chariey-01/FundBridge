@@ -32,11 +32,8 @@ def test_creator_can_create_campaign_through_the_api(client, seeded):
     assert AuditLog.query.filter_by(action="campaign.created", resource_id=campaign_id).count() == 1
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT X-1 (merge artifact in feat/backend-core 6fd76b3): assisted_beneficiary() "
-                                       "writes beneficiary.onboarded twice because both the integration-branch fix and the "
-                                       "ported fix (3edf6c4) survived the PR #3 merge (routes.py, lines after the profile "
-                                       "is created); each onboarding leaves two audit rows")
 def test_assisted_onboarding_is_audited(client, seeded):
+    """C-3, and X-1 (duplicate audit row after the PR #3 merge) fixed in feat/backend-core b45ee29: exactly one row."""
     res = client.post("/api/v1/beneficiaries", headers=auth(client, "agent@example.test"),
                       json={"display_name": "Otieno", "phone_number": "+254711222333", "country_code": "KE"})
     assert res.status_code == 201
@@ -80,7 +77,9 @@ def _order_through(client, seeded, monkeypatch, response_for):
 
 def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monkeypatch):
     """C-4: the PayPal order was created before the donation had an id, so reference_id was None and every capture
-    failed the reference check. Fixed in feat/backend-core b7bf45b (flush before the provider call)."""
+    failed the reference check. Fixed in feat/backend-core b7bf45b (flush before the provider call). C-4b (the
+    create-order response lacked purchase_units without "Prefer: return=representation") is fixed in b45ee29 and
+    covered over HTTP by tests/e2e/test_journeys.py::test_order_creation_against_paypal_default_response."""
     def representation(donation):  # what PayPal returns with "Prefer: return=representation"
         return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}],
                 "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": "USD", "value": "10.00"}}]}
@@ -88,18 +87,6 @@ def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monke
     res, sent = _order_through(client, seeded, monkeypatch, representation)
     assert res.status_code == 201, res.get_json()
     assert sent["reference_id"] and sent["reference_id"] == res.get_json()["data"]["id"]
-
-
-@pytest.mark.xfail(strict=True, reason="DEFECT C-4b: PayPal's create-order default (Prefer: return=minimal) returns only "
-                                       "id, status and links; b7bf45b requires purchase_units in that response and the "
-                                       "adapter does not request return=representation, so real orders fail with 400 "
-                                       "PAYMENT_ORDER_MISMATCH")
-def test_paypal_default_minimal_create_order_response_is_accepted(client, seeded, monkeypatch):
-    def minimal(donation):
-        return {"id": "ORDER-MIN-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}]}
-
-    res, _ = _order_through(client, seeded, monkeypatch, minimal)
-    assert res.status_code == 201, res.get_json()
 
 
 @pytest.mark.xfail(strict=True, reason="DEFECT X-2 (merge artifact in feat/backend-core 6fd76b3): list_campaigns() applies "

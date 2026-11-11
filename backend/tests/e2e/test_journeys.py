@@ -7,8 +7,6 @@ import random
 import uuid
 from decimal import Decimal
 
-import pytest
-
 from .provider_doubles import VALID_WEBHOOK_SIGNATURE
 
 
@@ -423,18 +421,13 @@ def test_server_logs_hold_no_secrets_or_phone_numbers(live):
     assert "unhandled error" not in log, "a journey hit an unhandled server error"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT C-4b: PayPal's create-order returns a minimal body (id, status, links) "
-                                       "unless the request sends 'Prefer: return=representation'; the canonical adapter "
-                                       "does not send it but b7bf45b requires purchase_units in the response, so every "
-                                       "real order fails with 400 PAYMENT_ORDER_MISMATCH")
 def test_order_creation_against_paypal_default_response(live):
+    """Was DEFECT C-4b; fixed in feat/backend-core b45ee29 (create-order sends "Prefer: return=representation").
+    The double returns PayPal's default minimal body unless that header is sent, as every journey here now relies on."""
+    assert live.paypal.assume_representation is False
     world = _published_campaign(live, title_word="Minimal")
     donor = live.account("donor")
-    live.paypal.assume_representation = False  # behave exactly like PayPal's default
-    try:
-        res = live.call("POST", "/api/v1/donations/orders", donor["token"], headers={"Idempotency-Key": uuid.uuid4().hex},
-                        json={"campaign_id": world["campaign"]["id"], "amount": "5.00", "currency": "USD"})
-    finally:
-        live.paypal.assume_representation = True
+    res = live.call("POST", "/api/v1/donations/orders", donor["token"], headers={"Idempotency-Key": uuid.uuid4().hex},
+                    json={"campaign_id": world["campaign"]["id"], "amount": "5.00", "currency": "USD"})
     assert res.status_code == 201, res.text
-
+    assert res.json()["data"]["approval_url"].startswith("https://www.sandbox.paypal.com/")
