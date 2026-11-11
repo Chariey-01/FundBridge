@@ -97,6 +97,19 @@ def submit_campaign(campaign_id):
     if u.id != x.creator_id or x.status != CampaignStatus.draft: raise PermissionError("FORBIDDEN")
     x.status=CampaignStatus.submitted; x.review_status="pending"; db.session.add(AuditLog(actor_id=u.id,action="campaign.submitted",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x))
 
+@api.post("/campaigns/<campaign_id>/review")
+@roles_allowed(Role.reviewer, Role.admin)
+def review_campaign(campaign_id):
+    campaign=Campaign.query.get_or_404(campaign_id); decision=body().get("decision")
+    if campaign.status != CampaignStatus.submitted: raise ValueError("INVALID_CAMPAIGN_TRANSITION")
+    if campaign.creator_id == g.current_user.id: raise PermissionError("SELF_REVIEW_FORBIDDEN")
+    if decision == "approve":
+        campaign.status=CampaignStatus.published; campaign.review_status="approved"; campaign.published_at=datetime.now(timezone.utc)
+    elif decision == "reject": campaign.status=CampaignStatus.draft; campaign.review_status="rejected"
+    else: raise ValueError("VALIDATION_ERROR")
+    db.session.add(AuditLog(actor_id=g.current_user.id,action=f"campaign.review_{decision}",resource_type="campaign",resource_id=campaign.id))
+    db.session.commit(); return ok(serialize_campaign(campaign))
+
 @api.get("/me/campaigns")
 def my_campaigns():
     u=current_user()
