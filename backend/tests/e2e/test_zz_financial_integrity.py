@@ -70,11 +70,8 @@ def test_parallel_reconciliations_credit_once(live):
     assert _ok(live.call("GET", f"/api/v1/donations/{order['id']}", donor["token"]))["status"] == "completed"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT R-2: parallel POST /donations/{id}/reconcile for one donation return "
-                                       "HTTP 500 (IntegrityError/UniqueViolation on the ledger credit at "
-                                       "routes.py reconcile_donation commit) instead of the completed donation; "
-                                       "money is safe (credited once)")
 def test_parallel_reconciliations_never_return_500(live):
+    """R-2 regression: fixed in feat/backend-core 4bae876/7115094 (row lock + populate_existing in reconcile)."""
     donor = live.account("donor")
     seen = Counter()
     for _ in range(2):
@@ -100,11 +97,8 @@ def test_parallel_orders_with_one_idempotency_key_create_one_donation(live):
     assert len(mine) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT S-5: parallel POST /donations/orders with one Idempotency-Key return "
-                                       "HTTP 500 (IntegrityError/UniqueViolation on uq_donation_donor_idempotency at "
-                                       "routes.py donation_order flush) instead of replaying the original donation; "
-                                       "only one donation is created")
 def test_parallel_orders_with_one_key_replay_instead_of_500(live):
+    """S-5 regression: fixed in feat/backend-core 4bae876 (per-donor/key advisory lock before the provider call)."""
     world = _published_campaign(live, title_word="Replay")
     donor = live.account("donor")
     seen = Counter()

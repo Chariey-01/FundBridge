@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
 
 import sqlalchemy.exc
 
@@ -89,10 +88,8 @@ def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monke
     assert sent["reference_id"] and sent["reference_id"] == res.get_json()["data"]["id"]
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT X-2 (merge artifact in feat/backend-core 6fd76b3): list_campaigns() applies "
-                                       "two ?q= filters (the escaped title/description one and the ported title/description/"
-                                       "category one) joined with AND, so the ported category match never returns anything")
 def test_keyword_search_matches_category_as_ported(client, seeded):
+    """X-2 regression: the duplicated ?q= filters were merged into one escaped title/description/category filter (4bae876)."""
     # The seeded campaign is category "education"; neither its title nor description contains that word.
     res = client.get("/api/v1/campaigns?q=education")
     assert [c["title"] for c in res.get_json()["data"]] == ["School fees for Amina"]

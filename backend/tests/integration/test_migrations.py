@@ -93,7 +93,7 @@ DEFECT_M2 = ("DEFECT M-2: the initial migration's downgrade drops tables but not
              "with DuplicateObject")
 
 
-@pytest.mark.parametrize("backend", ["sqlite", pytest.param("postgresql", marks=pytest.mark.xfail(strict=True, reason=DEFECT_M2))])
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
 def test_full_downgrade_then_upgrade(backend, tmp_path):
     from flask_migrate import downgrade, upgrade
 
@@ -173,7 +173,6 @@ DEFECT_M1B = ("DEFECT M-1b: a database built from the original a0d4581f14e2 (bef
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
-@pytest.mark.xfail(strict=True, reason=DEFECT_M1B)
 def test_upgrade_from_original_initial_schema_drops_global_key_uniqueness(backend, tmp_path):
     from flask_migrate import upgrade
 

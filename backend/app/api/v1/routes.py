@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, current_app, g, jsonify, request
 from flask_jwt_extended import create_access_token
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
@@ -32,6 +32,12 @@ def currency(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Z]{3}", value): raise ValueError("VALIDATION_ERROR")
     return value
 def fingerprint(value): return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",":"), default=str).encode()).hexdigest()
+def idempotency_lock(actor_id, key):
+    """Serialize same-actor idempotency keys on PostgreSQL before calling a provider."""
+    if db.session.get_bind().dialect.name != "postgresql": return
+    digest=hashlib.sha256(f"donation-order:{actor_id}:{key}".encode()).digest()
+    lock_id=int.from_bytes(digest[:8], byteorder="big", signed=True)
+    db.session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
 def serialize_campaign(x): return {"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
 def serialize_donation(x): return {"id":x.id,"campaign_id":x.campaign_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 def serialize_payout(x): return {"id":x.id,"campaign_id":x.campaign_id,"beneficiary_id":x.beneficiary_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
@@ -64,14 +70,11 @@ def me():
 def list_campaigns():
     q=Campaign.query.filter_by(status=CampaignStatus.published)
     if request.args.get("category"): q=q.filter_by(category=request.args["category"])
-    # Plain keyword search (no AI dependency): case-insensitive match on title or description.
+    # Plain keyword search (no AI dependency), composed with the exact category filter.
     term=(request.args.get("q") or "").strip()[:100]
     if term:
         pattern="%"+term.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
-        q=q.filter(Campaign.title.ilike(pattern,escape="\\") | Campaign.description.ilike(pattern,escape="\\"))
-    if request.args.get("q"):
-        term=f"%{request.args['q'].strip()}%"
-        q=q.filter(or_(Campaign.title.ilike(term), Campaign.description.ilike(term), Campaign.category.ilike(term)))
+        q=q.filter(or_(Campaign.title.ilike(pattern,escape="\\"), Campaign.description.ilike(pattern,escape="\\"), Campaign.category.ilike(pattern,escape="\\")))
     return ok([serialize_campaign(x) for x in q.order_by(Campaign.published_at.desc()).limit(50)])
 
 @api.get("/campaigns/<campaign_id>")
@@ -150,6 +153,9 @@ def donation_order():
     data=body(); key=request.headers.get("Idempotency-Key")
     if not key: raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
     request_fingerprint=fingerprint({"campaign_id":data.get("campaign_id"),"amount":data.get("amount"),"currency":data.get("currency"),"provider":"paypal"})
+    idempotency_lock(donor.id,key)
+    # Re-check after acquiring the PostgreSQL transaction lock: only the holder may
+    # create the external PayPal order for this actor/key pair.
     existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
     if existing:
         if existing.idempotency_fingerprint != request_fingerprint: raise ValueError("IDEMPOTENCY_KEY_REUSED")
@@ -175,7 +181,14 @@ def donation_order():
     if not order_id or unit.get("reference_id") != donation.id or provider_amount.get("currency_code") != donation.currency or provider_value != Decimal(donation.amount):
         db.session.rollback(); raise ValueError("PAYMENT_ORDER_MISMATCH")
     donation.provider_order_id=order_id
-    db.session.add(donation); db.session.commit(); return ok({**serialize_donation(donation),"approval_url":next((l["href"] for l in order.get("links",[]) if l.get("rel")=="approve"),None)},201)
+    try:
+        db.session.add(donation); db.session.commit()
+    except IntegrityError:
+        # Defensive fallback for a historical/externally-created uniqueness race.
+        db.session.rollback(); existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
+        if existing and existing.idempotency_fingerprint == request_fingerprint: return ok(serialize_donation(existing))
+        raise ValueError("IDEMPOTENCY_KEY_REUSED")
+    return ok({**serialize_donation(donation),"approval_url":next((l["href"] for l in order.get("links",[]) if l.get("rel")=="approve"),None)},201)
 
 @api.post("/webhooks/paypal")
 def paypal_webhook():
@@ -242,6 +255,12 @@ def reconcile_donation(donation_id):
     if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if donation.status != DonationStatus.pending or not donation.provider_order_id: raise ValueError("INVALID_DONATION_TRANSITION")
     result=PayPalSandboxAdapter(current_app.config).get_order(donation.provider_order_id)
+    # Do provider I/O before locking, then serialize the state transition and use a
+    # fresh row. Waiting requests observe the committed completed/failed result.
+    # ``donation`` was read before provider I/O. Refresh the identity-map object
+    # after waiting on the lock so concurrent callers see the winner's commit.
+    donation=db.session.query(Donation).filter_by(id=donation_id).with_for_update().populate_existing().one()
+    if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if result.get("status") == "COMPLETED":
         unit=(result.get("purchase_units") or [{}])[0]
         if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
