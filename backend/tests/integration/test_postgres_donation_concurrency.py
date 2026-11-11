@@ -8,7 +8,9 @@ import pytest
 
 from app import create_app
 from app.extensions import db
-from app.models.core import Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Role, User
+from app.models.core import Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus, Role, User
+from app.services.ledger import available_funds, reserve_payout
+from app.services.payments import mark_donation_completed
 
 from .conftest import BASE_CONFIG, PASSWORD
 
@@ -84,4 +86,36 @@ def test_conflicting_concurrent_donation_orders_return_clear_conflict():
         assert sorted(status for status, _ in results) == [201, 400]
         assert any(body.get("error", {}).get("code") == "IDEMPOTENCY_KEY_REUSED" for _, body in results)
         assert Donation.query.filter_by(idempotency_key="conflicting-race-key").count() == 1
+        db.session.remove(); db.drop_all()
+
+
+def test_donation_credit_and_payout_reservation_race_keeps_nonnegative_balance():
+    """A payout either sees the credit and reserves it, or is safely rejected first."""
+    app, campaign_id, donor_id, _ = _app_with_donor()
+    with app.app_context():
+        donation = Donation(campaign_id=campaign_id, donor_id=donor_id, amount=Decimal("10.00"), currency="USD", provider="paypal", provider_order_id="credit-race", idempotency_key="credit-race", idempotency_fingerprint="x", status=DonationStatus.pending)
+        db.session.add(donation); db.session.commit(); donation_id = donation.id
+    barrier, outcomes, lock = threading.Barrier(2), [], threading.Lock()
+    def credit():
+        with app.app_context():
+            barrier.wait(); d = db.session.get(Donation, donation_id)
+            mark_donation_completed(d, order_id="credit-race", capture={"id": "credit-race-capture", "status": "COMPLETED", "amount": {"currency_code": "USD", "value": "10.00"}})
+            db.session.commit()
+            with lock: outcomes.append("credited")
+    def reserve():
+        with app.app_context():
+            barrier.wait(); db.session.query(Campaign).filter_by(id=campaign_id).with_for_update().one()
+            payout = Payout(campaign_id=campaign_id, beneficiary_id="beneficiary", requested_by=donor_id, amount=Decimal("10.00"), currency="USD", destination_type="wallet", destination_reference="token", provider="simulator", idempotency_key="reserve-race", idempotency_fingerprint="x", status=PayoutStatus.requested)
+            db.session.add(payout); db.session.flush()
+            try:
+                reserve_payout(payout); db.session.commit(); outcome = "reserved"
+            except ValueError:
+                db.session.rollback(); outcome = "rejected"
+            with lock: outcomes.append(outcome)
+    threads = [threading.Thread(target=credit), threading.Thread(target=reserve)]
+    [thread.start() for thread in threads]; [thread.join(30) for thread in threads]
+    with app.app_context():
+        assert sorted(outcomes) in (["credited", "rejected"], ["credited", "reserved"])
+        assert FinancialLedgerEntry.query.filter_by(donation_id=donation_id, entry_type="donation_completed").count() == 1
+        assert available_funds(campaign_id, "USD") >= Decimal("0")
         db.session.remove(); db.drop_all()
