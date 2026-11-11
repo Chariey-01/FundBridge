@@ -80,11 +80,11 @@ def _parse(model: type[BaseModel]):
         return None, error("PAYLOAD_TOO_LARGE", "The request body is too large.", 413)
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
-        return None, error("VALIDATION_ERROR", "Send a JSON object.", 422, {"body": ["Expected a JSON object."]})
+        return None, error("VALIDATION_ERROR", "Send a JSON object.", 400, {"body": ["Expected a JSON object."]})
     try:
         return model.model_validate(body), None
     except ValidationError as exc:
-        return None, error("VALIDATION_ERROR", "The supplied information is invalid.", 422, validation_details(exc))
+        return None, error("VALIDATION_ERROR", "The supplied information is invalid.", 400, validation_details(exc))
 
 
 def _run(fn: Callable[[], dict], rate_key: str, *, public: bool):

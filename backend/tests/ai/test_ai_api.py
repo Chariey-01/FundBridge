@@ -42,7 +42,7 @@ def test_draft_requires_authentication(client):
 
 def test_validation_errors_use_contract_envelope(client):
     res = client.post("/api/v1/ai/campaign-draft", json={"story_notes": "short", "unexpected": 1}, headers=AUTH)
-    assert res.status_code == 422
+    assert res.status_code == 400
     err = res.get_json()["error"]
     assert err["code"] == "VALIDATION_ERROR"
     assert "story_notes" in err["details"] and "unexpected" in err["details"]
@@ -51,12 +51,12 @@ def test_validation_errors_use_contract_envelope(client):
 def test_float_goal_rejected(client):
     body = {**DRAFT_BODY, "goal": {"amount": 400.5, "currency": "USD"}}
     res = client.post("/api/v1/ai/campaign-draft", json=body, headers=AUTH)
-    assert res.status_code == 422
+    assert res.status_code == 400
 
 
 def test_non_json_body_rejected(client):
     res = client.post("/api/v1/ai/campaign-draft", data="hello", headers=AUTH)
-    assert res.status_code == 422
+    assert res.status_code == 400
 
 
 # --------------------------------------------------------------------------- campaign draft
@@ -165,7 +165,7 @@ def test_translate_restores_redacted_values(client, fake_provider):
 
 def test_translate_unsupported_language_rejected(client):
     res = client.post("/api/v1/ai/translate", json={"text": "Hello", "target_language": "xx"})
-    assert res.status_code == 422
+    assert res.status_code == 400
 
 
 # --------------------------------------------------------------------------- assistant
