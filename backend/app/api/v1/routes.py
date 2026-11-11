@@ -7,6 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, text
 
 from app.extensions import db
+from app.integrations.core_adapters import jwt_actor_resolver, raised_total
+from app.integrations.http_envelope import error
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
 from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User, uuid_str)
@@ -38,7 +40,11 @@ def idempotency_lock(actor_id, key):
     digest=hashlib.sha256(f"donation-order:{actor_id}:{key}".encode()).digest()
     lock_id=int.from_bytes(digest[:8], byteorder="big", signed=True)
     db.session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
-def serialize_campaign(x): return {"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
+def serialize_campaign(x, *, include_beneficiary=False, include_raised=False):
+    data={"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
+    if include_beneficiary: data["beneficiary_id"]=x.beneficiary_id
+    if include_raised: data["raised"]=raised_total(x.id, x.goal_currency).to_dict()
+    return data
 def serialize_donation(x): return {"id":x.id,"campaign_id":x.campaign_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 def serialize_payout(x): return {"id":x.id,"campaign_id":x.campaign_id,"beneficiary_id":x.beneficiary_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 
@@ -80,10 +86,15 @@ def list_campaigns():
 @api.get("/campaigns/<campaign_id>")
 def campaign_detail(campaign_id):
     x=Campaign.query.get_or_404(campaign_id)
+    actor=jwt_actor_resolver()
+    privileged=actor is not None and (actor.id == x.creator_id or actor.role in (Role.reviewer.value,Role.admin.value))
     if x.status != CampaignStatus.published:
         u=current_user()
         if u.id != x.creator_id and u.role not in (Role.reviewer,Role.admin): raise PermissionError("FORBIDDEN")
-    return ok(serialize_campaign(x))
+        privileged=True
+    # Public detail exposes only public campaign facts and ledger-backed raised total.
+    # Beneficiary identifiers are retained only for the creator and review staff.
+    return ok(serialize_campaign(x,include_beneficiary=privileged,include_raised=True))
 
 @api.post("/campaigns")
 @roles_allowed(Role.creator, Role.admin)
@@ -95,8 +106,14 @@ def create_campaign():
     x=Campaign(creator_id=g.current_user.id,beneficiary_id=beneficiary.id,title=title,slug=slug,description=description,category=data["category"],goal_amount=money(data.get("goal_amount")),goal_currency=currency(data.get("goal_currency")))
     # Flush first so the generated campaign id exists before the audit row is inserted.
     # Both writes remain in one transaction and roll back together on failure.
-    db.session.add(x); db.session.flush()
-    db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
+    try:
+        db.session.add(x); db.session.flush()
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id))
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return error("SLUG_ALREADY_EXISTS","A campaign already uses this slug.",409)
+    return ok(serialize_campaign(x,include_beneficiary=True),201)
 
 @api.patch("/campaigns/<campaign_id>")
 def update_campaign(campaign_id):
@@ -126,10 +143,20 @@ def review_campaign(campaign_id):
     db.session.add(AuditLog(actor_id=g.current_user.id,action=f"campaign.review_{decision}",resource_type="campaign",resource_id=campaign.id))
     db.session.commit(); return ok(serialize_campaign(campaign))
 
+@api.get("/campaigns/review-queue")
+@roles_allowed(Role.reviewer, Role.admin)
+def campaign_review_queue():
+    try:
+        page=max(1,int(request.args.get("page",1))); page_size=min(100,max(1,int(request.args.get("page_size",20))))
+    except ValueError: raise ValueError("VALIDATION_ERROR")
+    query=Campaign.query.filter_by(status=CampaignStatus.submitted,review_status="pending").order_by(Campaign.created_at.asc())
+    total=query.count(); items=query.offset((page-1)*page_size).limit(page_size).all()
+    return ok([serialize_campaign(item,include_beneficiary=True,include_raised=True) for item in items],meta={"page":page,"page_size":page_size,"total":total})
+
 @api.get("/me/campaigns")
 def my_campaigns():
     u=current_user()
-    return ok([serialize_campaign(x) for x in Campaign.query.filter_by(creator_id=u.id).order_by(Campaign.created_at.desc()).all()])
+    return ok([serialize_campaign(x,include_beneficiary=True) for x in Campaign.query.filter_by(creator_id=u.id).order_by(Campaign.created_at.desc()).all()])
 
 @api.post("/beneficiaries")
 @roles_allowed(Role.agent,Role.admin)
