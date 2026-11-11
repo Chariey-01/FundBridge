@@ -109,7 +109,36 @@ Generated from the code (`backend/app/services/messaging/i18n.py`, `backend/app/
 | Category `water_sanitation` | clean water | maji safi | 2 |
 | Category `other` | an urgent need | hitaji la dharura | 2 |
 
-## 6. AI guardrail: Kiswahili claims the assistant must never make
+## 6. Donation and payout explanations (web, `POST /ai/status-explanation`)
+
+Shown to donors and beneficiaries as FundBridge's standard explanation of a record. All priority 1: they say whether money has moved. `{amount}` is like "25.00 USD"; `{title}` is the campaign title; `{raised}` becomes " (150.00 USD zimethibitishwa hadi sasa)".
+
+| Record / status | English | Kiswahili |
+|---|---|---|
+| donation label `created` | Started, not paid | Umeanzishwa, haujalipwa |
+| donation label `pending` | Waiting for PayPal confirmation | Unasubiri uthibitisho wa PayPal |
+| donation label `completed` | Confirmed | Umethibitishwa |
+| donation label `failed` | Not completed | Haukukamilika |
+| donation label `cancelled` | Cancelled | Umeghairiwa |
+| donation label `refunded` | Refunded | Umerejeshwa |
+| donation label `partially_refunded` | Partly refunded | Umerejeshwa kwa sehemu |
+| donation `pending` | Your donation of {amount} to "{title}" is not confirmed yet. PayPal has not confirmed the payment to FundBridge, so it is not counted in the campaign total. If you approved it in PayPal, check again in a moment. Do not pay again unless this donation shows as not completed. | Mchango wako wa {amount} kwa "{title}" bado haujathibitishwa. PayPal bado haijathibitisha malipo kwa FundBridge, kwa hivyo haujahesabiwa kwenye jumla ya kampeni. Ikiwa uliidhinisha kwenye PayPal, angalia tena baada ya muda mfupi. Usilipe tena isipokuwa mchango huu uonyeshe haukukamilika. |
+| donation `completed` | Your donation of {amount} to "{title}" is confirmed. PayPal confirmed the payment and FundBridge recorded it, so it counts in the campaign's confirmed total{raised}. This does not mean the beneficiary has been paid yet: payouts are reviewed separately. | Mchango wako wa {amount} kwa "{title}" umethibitishwa. PayPal ilithibitisha malipo na FundBridge imeyarekodi, kwa hivyo unahesabiwa kwenye jumla iliyothibitishwa ya kampeni{raised}. Hii haimaanishi kwamba mnufaika ameshalipwa: malipo kwa mnufaika hukaguliwa kando. |
+| donation `failed` | Your donation of {amount} to "{title}" was not completed. PayPal did not confirm the payment, so nothing was counted for the campaign. You can try again. | Mchango wako wa {amount} kwa "{title}" haukukamilika. PayPal haikuthibitisha malipo, kwa hivyo hakuna kilichohesabiwa kwa kampeni. Unaweza kujaribu tena. |
+| donation `cancelled` | Your donation of {amount} to "{title}" was cancelled before the payment was confirmed. Nothing was counted for the campaign. | Mchango wako wa {amount} kwa "{title}" ulighairiwa kabla ya malipo kuthibitishwa. Hakuna kilichohesabiwa kwa kampeni. |
+| donation `refunded` | Your donation of {amount} to "{title}" was refunded. It no longer counts in the campaign total. | Mchango wako wa {amount} kwa "{title}" ulirejeshwa. Hauhesabiwi tena kwenye jumla ya kampeni. |
+| donation `partially_refunded` | Part of your donation of {amount} to "{title}" was refunded. Only the confirmed remainder counts in the campaign total. | Sehemu ya mchango wako wa {amount} kwa "{title}" ilirejeshwa. Kiasi kilichobaki kilichothibitishwa ndicho kinachohesabiwa kwenye jumla ya kampeni. |
+| payout `requested` | Your payout of {amount} from "{title}" is waiting for FundBridge review. No money has been sent yet. | Malipo yako ya {amount} kutoka "{title}" yanasubiri ukaguzi wa FundBridge. Hakuna pesa iliyotumwa bado. |
+| payout `under_review` | Your payout of {amount} from "{title}" is being reviewed by FundBridge. No money has been sent yet. | Malipo yako ya {amount} kutoka "{title}" yanakaguliwa na FundBridge. Hakuna pesa iliyotumwa bado. |
+| payout `rejected` | Your payout of {amount} from "{title}" was not approved, so no money will be sent for this request. Contact your community agent to find out why. | Malipo yako ya {amount} kutoka "{title}" hayakuidhinishwa, kwa hivyo hakuna pesa itakayotumwa kwa ombi hili. Wasiliana na wakala wako kujua sababu. |
+| payout `approved_for_submission` | Your payout of {amount} from "{title}" is approved and being prepared. It has not been sent to the mobile-money provider yet, so the money has not arrived. | Malipo yako ya {amount} kutoka "{title}" yameidhinishwa na yanaandaliwa. Bado hayajatumwa kwa mtoa huduma wa pesa kwa simu, kwa hivyo pesa haijafika. |
+| payout `submitted` | Your payout of {amount} from "{title}" was handed to the mobile-money provider. FundBridge is waiting for the provider to confirm it. Do not request it again. | Malipo yako ya {amount} kutoka "{title}" yamekabidhiwa kwa mtoa huduma wa pesa kwa simu. FundBridge inasubiri uthibitisho wake. Usiombe tena. |
+| payout `pending_confirmation` | Your payout of {amount} from "{title}" is waiting for the mobile-money provider's confirmation. The result is not known yet. Do not request it again; this status will be updated. | Malipo yako ya {amount} kutoka "{title}" yanasubiri uthibitisho wa mtoa huduma wa pesa kwa simu. Matokeo bado hayajajulikana. Usiombe tena; hali hii itasasishwa. |
+| payout `succeeded` | Your payout of {amount} from "{title}" is paid. The mobile-money provider confirmed the payment to your verified number. | Malipo yako ya {amount} kutoka "{title}" yamelipwa. Mtoa huduma wa pesa kwa simu amethibitisha malipo kwenye nambari yako iliyothibitishwa. |
+| payout `failed` | Your payout of {amount} from "{title}" was not completed by the mobile-money provider. Your community agent will help you. | Malipo yako ya {amount} kutoka "{title}" hayakukamilishwa na mtoa huduma wa pesa kwa simu. Wakala wako atakusaidia. |
+| (unknown status) | FundBridge cannot explain this status yet. Check again later or contact your community agent. | FundBridge haiwezi kueleza hali hii bado. Angalia tena baadaye au wasiliana na wakala wako. |
+
+## 7. AI guardrail: Kiswahili claims the assistant must never make
 
 When an AI reply contains one of these, it is replaced with a safe message (assistant) or flagged for the human editor (drafts). Current coverage, from `guardrails.py`:
 

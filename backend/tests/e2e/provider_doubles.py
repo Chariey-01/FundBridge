@@ -196,6 +196,8 @@ class OpenAIDouble(_Double):
         "beneficiary_assistant": {"reply": "You can check your payout status from the menu.",
                                   "suggested_actions": ["view_payout_status"], "escalate_to_human": False},
         "campaign_search": {"keywords": ["school", "fees"], "category": "education", "country_code": "KE"},
+        # No amounts and no outcome claims, so the server's guardrails accept it for any status.
+        "status_explanation": {"explanation": "Here is what FundBridge's records show for this request."},
     }
 
     def __init__(self, api_key: str):
