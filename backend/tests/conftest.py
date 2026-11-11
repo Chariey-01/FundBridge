@@ -7,7 +7,7 @@ from app.extensions import db
 
 @pytest.fixture
 def app():
-    app = create_app({"TESTING": True, "SQLALCHEMY_DATABASE_URI": "sqlite://", "JWT_SECRET_KEY": "test-secret"})
+    app = create_app({"TESTING": True, "SQLALCHEMY_DATABASE_URI": "sqlite://", "JWT_SECRET_KEY": "test-secret-key-with-at-least-thirty-two-bytes"})
     with app.app_context():
         db.create_all(); yield app; db.session.remove(); db.drop_all()
 

@@ -40,3 +40,8 @@ def test_payout_rejects_unfunded_campaign(app, client):
     _, _, beneficiary, b, campaign = seed(app)
     response = client.post("/api/v1/payouts", json={"beneficiary_id": b.id, "campaign_id": campaign.id, "amount": "1.00", "currency": "USD", "destination_reference": "protected"}, headers={**auth(app, beneficiary), "Idempotency-Key": "payout-1"})
     assert response.status_code == 409
+
+def test_registration_cannot_self_assign_admin_role(app, client):
+    response = client.post("/api/v1/auth/register", json={"email": "new@example.test", "password": "long-password-123", "role": "admin"})
+    assert response.status_code == 201
+    assert response.json["data"]["user"]["role"] == "donor"

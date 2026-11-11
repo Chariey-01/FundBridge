@@ -4,6 +4,7 @@ import jwt
 from flask import current_app, g, request
 from .errors import error
 from .models import User
+from .extensions import db
 
 
 def issue_token(user):
@@ -20,7 +21,7 @@ def require_auth(fn):
             payload = jwt.decode(header[7:], current_app.config["JWT_SECRET_KEY"], algorithms=["HS256"])
         except jwt.PyJWTError:
             error("INVALID_TOKEN", "The access token is invalid or expired.", 401)
-        g.user = User.query.get(payload["sub"])
+        g.user = db.session.get(User, payload["sub"])
         if not g.user or g.user.status != "active": error("ACCOUNT_UNAVAILABLE", "This account is unavailable.", 403)
         return fn(*args, **kwargs)
     return wrapped
