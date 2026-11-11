@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
-from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User)
+from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User, uuid_str)
 from app.security.auth import current_user, roles_allowed
 from app.services.ledger import release_payout, reserve_payout
 from app.services.payments import mark_donation_completed
@@ -86,7 +86,8 @@ def create_campaign():
     beneficiary=BeneficiaryProfile.query.get(data.get("beneficiary_id"))
     if not beneficiary: raise ValueError("BENEFICIARY_NOT_FOUND")
     x=Campaign(creator_id=g.current_user.id,beneficiary_id=beneficiary.id,title=title,slug=slug,description=description,category=data["category"],goal_amount=money(data.get("goal_amount")),goal_currency=currency(data.get("goal_currency")))
-    db.session.add(x); db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
+    # flush first: x.id is generated at INSERT, and the audit row needs it (NOT NULL resource_id).
+    db.session.add(x); db.session.flush(); db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
 
 @api.patch("/campaigns/<campaign_id>")
 def update_campaign(campaign_id):
@@ -132,7 +133,8 @@ def assisted_beneficiary():
         if not linked_user or linked_user.status != "active" or linked_user.role != Role.beneficiary: raise ValueError("BENEFICIARY_ACCOUNT_NOT_ELIGIBLE")
         if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
     x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
-    db.session.add(x); db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
+    db.session.add(x); db.session.flush(); db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id,metadata_json={"linked_user":bool(user_id)}))
+    db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
 
 @api.post("/donations/orders")
 def donation_order():
@@ -148,7 +150,9 @@ def donation_order():
         return ok(serialize_donation(existing))
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
-    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
+    # id is assigned now (not at INSERT) because PayPal must receive it as purchase_units[0].reference_id;
+    # capture later rejects any order whose reference_id is not this donation's id.
+    donation=Donation(id=uuid_str(),campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
     order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url","")); donation.provider_order_id=order["id"]

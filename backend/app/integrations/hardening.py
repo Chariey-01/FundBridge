@@ -12,7 +12,9 @@
   rolled back, so no partial donation or payout row is written by this request. The messages never
   claim "nothing was charged": a capture that timed out may still have succeeded at the provider,
   so clients must re-read the donation status.
-- Any other unhandled exception becomes a logged ``INTERNAL_ERROR`` envelope with the request ID.
+- Any other unhandled exception becomes an ``INTERNAL_ERROR`` envelope with the request ID. The log
+  records the exception type and stack frames but not the message, which for database errors
+  includes SQL parameters (phone numbers, emails).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import math
 import re
 import threading
 import time
+import traceback
 import uuid
 from collections import deque
 
@@ -177,7 +180,10 @@ def init_hardening(app: Flask) -> None:
     def _unhandled(exc: Exception):
         db.session.rollback()
         request_id = getattr(g, "request_id", None)
-        log.exception("unhandled error request_id=%s", request_id)
+        # Stack frames only: exception messages can carry SQL parameters (phone numbers, emails).
+        frames = "".join(traceback.format_tb(exc.__traceback__))
+        cause = type(getattr(exc, "orig", None)).__name__ if getattr(exc, "orig", None) is not None else "-"
+        log.error("unhandled error request_id=%s type=%s cause=%s\n%s", request_id, type(exc).__name__, cause, frames)
         return error("INTERNAL_ERROR", "Something went wrong. Quote the request ID if you contact support.", 500, {"request_id": request_id})
 
 
