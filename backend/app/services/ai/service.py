@@ -27,7 +27,7 @@ from app.integrations.ai.base import (
     StructuredRequest,
 )
 
-from . import prompts
+from . import prompts, status_explainer
 from .fallback import (
     classify_intent,
     fallback_assistant,
@@ -43,18 +43,21 @@ from .guardrails import (
     restore_placeholders,
     sanitize_text,
 )
-from .ports import Actor, CampaignCatalog, SearchFilters
+from .ports import Actor, CampaignCatalog, SearchFilters, StatusReader
 from .rate_limit import RateDecision, SlidingWindowRateLimiter
 from .schemas import (
     ASSISTANT_JSON_SCHEMA,
     CAMPAIGN_CATEGORIES,
     DRAFT_JSON_SCHEMA,
     SEARCH_JSON_SCHEMA,
+    STATUS_EXPLANATION_JSON_SCHEMA,
     SUPPORTED_LANGUAGES,
     TRANSLATE_JSON_SCHEMA,
     AssistantOutput,
     AssistantRequest,
     CampaignDraftRequest,
+    StatusExplanationOutput,
+    StatusExplanationRequest,
     CampaignSearchRequest,
     DraftOutput,
     SearchOutput,
@@ -68,10 +71,18 @@ DRAFT_DISCLAIMER = (
     "AI-assisted draft. Check every fact, amount and name before saving. Nothing has been "
     "published or submitted."
 )
+DRAFT_FALLBACK_DISCLAIMER = (
+    "AI is unavailable, so this is a template built from your own notes, not an AI draft. Check every fact, "
+    "amount and name before saving. Nothing has been published or submitted."
+)
 ASSISTANT_NOTICE = (
     "This assistant cannot see or change balances, donations or payouts. Confirmed figures are "
     "shown on your status pages."
 )
+ASSISTANT_FALLBACK_NOTICE = (
+    "AI is unavailable, so this is a standard answer. " + ASSISTANT_NOTICE
+)
+SEARCH_FALLBACK_NOTICE = "AI search is unavailable, so results use simple keyword matching."
 TRANSLATION_NOTICE = "Machine translation. The original text is authoritative."
 
 
@@ -103,6 +114,20 @@ class AIConfig:
     user_rate_limit_per_minute: int = 10
     public_rate_limit_per_minute: int = 20
     safety_id_salt: str | None = None
+    # Cap on provider calls per UTC day for this process (cost protection for public endpoints); 0 disables it.
+    daily_request_limit: int = 2000
+
+
+class AIDailyLimitReached(AIProviderUnavailable):
+    code = "AI_DAILY_LIMIT_REACHED"
+
+
+class StatusNotAvailable(Exception):
+    """The record does not exist or the caller may not see it (NOT_FOUND / FORBIDDEN)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class AIService:
@@ -111,12 +136,16 @@ class AIService:
         provider: AIProvider | None,
         *,
         campaign_catalog: CampaignCatalog,
+        status_reader: StatusReader | None = None,
         config: AIConfig | None = None,
         interaction_recorder: InteractionRecorder | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.provider = provider
         self.catalog = campaign_catalog
+        self.status_reader = status_reader
+        self._day: str | None = None
+        self._day_count = 0
         self.config = config or AIConfig()
         self._record = interaction_recorder or _log_interaction
         # Provider health as observed by this process; "configured" is not "working".
@@ -138,7 +167,9 @@ class AIService:
                 "translate": "ai" if live else "unavailable",
                 "beneficiary_assistant": "ai" if live else "rule_based_fallback",
                 "campaign_search": "ai" if live else "keyword_fallback",
+                "status_explanation": "ai" if live else "verified_text_only",
             },
+            "daily_request_limit": self.config.daily_request_limit,
             "supported_languages": SUPPORTED_LANGUAGES,
             # True only after a real provider call succeeded in this process (not a configuration check).
             "model_verified": live and self._last_success_at is not None,
@@ -182,6 +213,7 @@ class AIService:
         except AIProviderError as exc:
             draft = fallback_draft(req, redacted_notes)
             meta = self._fallback_meta("campaign_draft", exc, actor.id)
+        disclaimer = DRAFT_DISCLAIMER if meta.get("ai_generated") else DRAFT_FALLBACK_DISCLAIMER
 
         warnings: list[str] = []
         if pii:
@@ -224,7 +256,7 @@ class AIService:
                 "warnings": warnings,
                 "language": req.language,
                 "requires_human_review": True,
-                "disclaimer": DRAFT_DISCLAIMER,
+                "disclaimer": disclaimer,
             },
             "meta": meta,
         }
@@ -324,7 +356,8 @@ class AIService:
                 result["suggested_actions"] = [*result["suggested_actions"], "contact_community_agent"][-3:]
         meta = {**meta, "output_replaced_by_guardrail": guarded}
         return {
-            "data": {**result, "reply": reply, "notice": ASSISTANT_NOTICE},
+            "data": {**result, "reply": reply,
+                     "notice": ASSISTANT_NOTICE if meta.get("ai_generated") else ASSISTANT_FALLBACK_NOTICE},
             "meta": meta,
         }
 
@@ -359,11 +392,79 @@ class AIService:
                 "interpreted_filters": filters.to_dict(),
                 "filters_relaxed": relaxed,
                 "results": [c.to_dict() for c in results],
+                "notice": None if meta.get("ai_generated") else SEARCH_FALLBACK_NOTICE,
             },
             "meta": meta,
         }
 
+    def explain_status(self, actor: Actor, req: StatusExplanationRequest) -> dict[str, Any]:
+        """Explain one donation or payout from the backend's record. Read-only: nothing here can change it."""
+        if self.status_reader is None:
+            raise StatusNotAvailable("NOT_FOUND")
+        from .ports import StatusLookupError
+
+        try:
+            facts = self.status_reader.read(actor, req.kind, req.id)
+        except StatusLookupError as exc:
+            raise StatusNotAvailable(exc.code) from exc
+        verified, verified_lang = status_explainer.verified_text(facts, req.language)
+        explanation, language, notice = verified, verified_lang, None
+        replaced_reason = None
+        try:
+            out, meta = self._call(
+                feature="status_explanation",
+                system=prompts.STATUS_EXPLANATION,
+                user=status_explainer.facts_prompt(facts, SUPPORTED_LANGUAGES[req.language], req.language, verified),
+                schema=STATUS_EXPLANATION_JSON_SCHEMA,
+                output_model=StatusExplanationOutput,
+                actor_id=actor.id,
+                max_tokens=500,
+            )
+            checked, replaced_reason = status_explainer.check_generated(out.explanation, facts, req.language)
+            if checked is not None:
+                explanation, language, notice = checked, req.language, status_explainer.NOTICE["ai"]
+            else:
+                log.warning("AI status explanation replaced by guardrail: %s", replaced_reason)
+                meta = {**meta, "ai_generated": False}
+        except AIProviderError as exc:
+            meta = self._fallback_meta("status_explanation", exc, actor.id)
+        if notice is None:
+            notice = status_explainer.NOTICE["fallback" if verified_lang == req.language else "fallback_language"]
+        return {
+            "data": {
+                "kind": facts.kind,
+                "id": facts.record_id,
+                "status": facts.status,  # verbatim from the backend record
+                "status_label": status_explainer.status_label(facts, req.language),
+                "confirmed": (facts.kind, facts.status) in status_explainer.CONFIRMED,
+                "final": (facts.kind, facts.status) in status_explainer.FINAL,
+                "amount": facts.amount.to_dict(),
+                "campaign_title": facts.campaign_title,
+                "campaign_raised": facts.campaign_raised.to_dict() if facts.campaign_raised else None,
+                "as_of": facts.updated_at,
+                "explanation": explanation,
+                "language": language,
+                "verified_text": verified,
+                "verified_text_language": verified_lang,
+                "notice": notice,
+                "source": "backend_record",
+            },
+            "meta": {**meta, "output_replaced_by_guardrail": replaced_reason is not None,
+                     **({"guardrail_reason": replaced_reason} if replaced_reason else {})},
+        }
+
     # --------------------------------------------------------------- internals
+
+    def _count_daily_call(self) -> None:
+        limit = self.config.daily_request_limit
+        if limit <= 0:
+            return
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        if today != self._day:
+            self._day, self._day_count = today, 0
+        if self._day_count >= limit:
+            raise AIDailyLimitReached(f"Daily AI request limit ({limit}) reached")
+        self._day_count += 1
 
     def _safety_id(self, actor_id: str) -> str | None:
         if not self.config.safety_id_salt:
@@ -384,6 +485,7 @@ class AIService:
     ) -> tuple[Any, dict[str, Any]]:
         if self.provider is None:
             raise AIProviderUnavailable("No AI provider configured")
+        self._count_daily_call()
         started = time.monotonic()
         result = None
         try:

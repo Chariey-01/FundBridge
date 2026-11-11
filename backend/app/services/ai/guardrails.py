@@ -28,19 +28,23 @@ _CONTROL_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f​-‏�
 
 # Statements an AI must never make on its own authority: that money moved,
 # that something was approved or verified, or that an outcome is guaranteed.
+# One character inside a sentence: anything but . ! ? or a newline, except a decimal point
+# between digits ("40.00 USD"), which must not end the sentence early and hide the claim.
+_IN_SENTENCE = r"(?:[^.!?\n]|(?<=\d)\.(?=\d))"
+
 _UNSAFE_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "financial_completion",
         re.compile(
             r"(?i)\b(payout|payment|transfer|money|funds?|donations?|withdrawal|m-?pesa)\b"
-            r"[^.!?\n]{0,60}\b(has|have|was|were|is|are|been)\b[^.!?\n]{0,20}"
+            rf"{_IN_SENTENCE}{{0,60}}\b(has|have|was|were|is|are|been)\b{_IN_SENTENCE}{{0,20}}"
             r"\b(sent|completed|approved|received|confirmed|processed|disbursed|credited|paid|released|deposited)\b"
         ),
     ),
     (
         "financial_completion",
         re.compile(
-            r"(?i)\byou(?:'ve| have)?\s+(?:received|been paid|been sent|got)\b[^.!?\n]{0,40}"
+            rf"(?i)\byou(?:'ve| have)?\s+(?:received|been paid|been sent|got)\b{_IN_SENTENCE}{{0,40}}"
             r"(?:\d|\b(?:usd|kes|ksh|eur|gbp|money|funds|payment|payout|donation)\b)"
         ),
     ),

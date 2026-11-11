@@ -59,6 +59,15 @@ def test_kiswahili_completion_claims_in_every_noun_class():
         assert find_unsafe_claims(safe) == [], safe
 
 
+def test_decimal_amounts_do_not_hide_completion_claims():
+    """Regression: "." inside "40.00" ended the sentence early, so this claim passed unflagged."""
+    for claim in ("Your payout of 40.00 USD has been sent to your M-Pesa.",
+                  "Your donation of 1,250.50 KES was received, thank you!",
+                  "You have received 12.5 USD today."):
+        assert "financial_completion" in find_unsafe_claims(claim), claim
+    assert find_unsafe_claims("Version 2.5 is out. The money is safe with your bank.") == []
+
+
 def test_kiswahili_fallback_replies_do_not_trip_the_guardrail():
     from app.services.ai.fallback import _ASSISTANT_REPLIES
 
