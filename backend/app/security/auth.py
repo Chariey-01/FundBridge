@@ -1,10 +1,11 @@
 from functools import wraps
 from flask import g
 from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
+from app.extensions import db
 from app.models.core import Role, User
 
 def current_user():
-    verify_jwt_in_request(); user = User.query.get(get_jwt_identity())
+    verify_jwt_in_request(); user = db.session.get(User, get_jwt_identity())
     if not user or user.status != "active": raise PermissionError("ACCOUNT_INACTIVE")
     return user
 

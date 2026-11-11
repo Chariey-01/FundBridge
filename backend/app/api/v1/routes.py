@@ -106,16 +106,16 @@ def assisted_beneficiary():
 
 @api.post("/donations/orders")
 def donation_order():
-    donor=None
-    try: donor=current_user()
-    except Exception: pass # guest donation, if enabled by business rules
+    # Guest payment requires a separately designed, non-enumerable ownership capability.
+    # It is unavailable until that contract is approved; invalid tokens must never fall back.
+    donor=current_user()
     data=body(); key=request.headers.get("Idempotency-Key")
     if not key: raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
     existing=Donation.query.filter_by(idempotency_key=key).first()
     if existing: return ok(serialize_donation(existing))
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
-    donation=Donation(campaign_id=campaign.id,donor_id=donor.id if donor else None,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,status=DonationStatus.pending)
+    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
     order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url","")); donation.provider_order_id=order["id"]
@@ -127,7 +127,8 @@ def paypal_webhook():
     if not adapter.verify_webhook(request.headers,payload): raise PermissionError("INVALID_WEBHOOK_SIGNATURE")
     if payload.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
         resource=payload.get("resource",{}); order_id=resource.get("supplementary_data",{}).get("related_ids",{}).get("order_id"); d=Donation.query.filter_by(provider_order_id=order_id).first()
-        if d: mark_donation_completed(d,resource["id"]); db.session.commit()
+        if not d: raise ValueError("PAYMENT_ORDER_MISMATCH")
+        mark_donation_completed(d, order_id=order_id, capture=resource); db.session.commit()
     return "",204
 
 @api.post("/donations/<donation_id>/capture")
@@ -135,14 +136,16 @@ def capture_donation(donation_id):
     """Server-side capture; redirect/query parameters are never accepted as proof."""
     donation=Donation.query.get_or_404(donation_id)
     u=current_user()
-    if donation.donor_id and donation.donor_id != u.id and u.role not in (Role.admin,): raise PermissionError("FORBIDDEN")
+    if donation.donor_id != u.id and u.role not in (Role.admin,): raise PermissionError("FORBIDDEN")
     if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if donation.status != DonationStatus.pending or not donation.provider_order_id: raise ValueError("INVALID_DONATION_TRANSITION")
     result=PayPalSandboxAdapter(current_app.config).capture_order(donation.provider_order_id)
     if result.get("status") != "COMPLETED": raise ValueError("PAYMENT_NOT_CONFIRMED")
-    captures=result.get("purchase_units", [{}])[0].get("payments", {}).get("captures", [])
+    unit=result.get("purchase_units", [{}])[0]
+    if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
+    captures=unit.get("payments", {}).get("captures", [])
     if not captures or captures[0].get("status") != "COMPLETED": raise ValueError("PAYMENT_NOT_CONFIRMED")
-    mark_donation_completed(donation,captures[0]["id"],u.id); db.session.commit()
+    mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id); db.session.commit()
     return ok(serialize_donation(donation))
 
 @api.post("/payouts")
