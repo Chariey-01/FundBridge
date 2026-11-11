@@ -1,3 +1,3 @@
-from .core import AuditLog, BeneficiaryProfile, Campaign, Donation, FinancialLedgerEntry, Payout, User
+from .core import AuditLog, BeneficiaryProfile, Campaign, Donation, FinancialLedgerEntry, Payout, ProviderWebhookEvent, User
 
-__all__ = ["User", "BeneficiaryProfile", "Campaign", "Donation", "Payout", "FinancialLedgerEntry", "AuditLog"]
+__all__ = ["User", "BeneficiaryProfile", "Campaign", "Donation", "Payout", "FinancialLedgerEntry", "ProviderWebhookEvent", "AuditLog"]

@@ -8,10 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
-from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, Role, User)
+from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User)
 from app.security.auth import current_user, roles_allowed
 from app.services.ledger import release_payout, reserve_payout
 from app.services.payments import mark_donation_completed
+from app.services.payouts import apply_provider_status
 
 api = Blueprint("api_v1", __name__)
 MONEY = Decimal("0.01")
@@ -130,11 +131,36 @@ def donation_order():
 def paypal_webhook():
     payload=body(); adapter=PayPalSandboxAdapter(current_app.config)
     if not adapter.verify_webhook(request.headers,payload): raise PermissionError("INVALID_WEBHOOK_SIGNATURE")
+    event_id=payload.get("id")
+    if not event_id: raise ValueError("INVALID_WEBHOOK_EVENT")
+    if ProviderWebhookEvent.query.filter_by(provider="paypal",event_id=event_id).first(): return "",204
     if payload.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
         resource=payload.get("resource",{}); order_id=resource.get("supplementary_data",{}).get("related_ids",{}).get("order_id"); d=Donation.query.filter_by(provider_order_id=order_id).first()
         if not d: raise ValueError("PAYMENT_ORDER_MISMATCH")
-        mark_donation_completed(d, order_id=order_id, capture=resource); db.session.commit()
+        mark_donation_completed(d, order_id=order_id, capture=resource)
+    db.session.add(ProviderWebhookEvent(provider="paypal",event_id=event_id,event_type=payload.get("event_type","unknown"),resource_id=payload.get("resource",{}).get("id"))); db.session.commit()
     return "",204
+
+@api.get("/beneficiaries/me")
+@roles_allowed(Role.beneficiary)
+def beneficiary_me():
+    x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
+    if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
+    return ok({"id":x.id,"display_name":x.display_name,"phone_number":x.phone_number,"preferred_language":x.preferred_language,"country_code":x.country_code,"verification_status":x.verification_status})
+
+@api.patch("/beneficiaries/me")
+@roles_allowed(Role.beneficiary)
+def update_beneficiary_me():
+    x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
+    if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
+    data=body()
+    for key in ("display_name","phone_number","preferred_language"):
+        if key in data and isinstance(data[key],str) and data[key].strip(): setattr(x,key,data[key].strip())
+    if "payout_destination_reference" in data and data["payout_destination_reference"] != x.payout_destination_reference:
+        if not isinstance(data["payout_destination_reference"],str) or not data["payout_destination_reference"]: raise ValueError("VALIDATION_ERROR")
+        x.payout_destination_reference=data["payout_destination_reference"]; x.verification_status="reverification_required"
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.payout_destination_changed",resource_type="beneficiary",resource_id=x.id))
+    db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status})
 
 @api.post("/donations/<donation_id>/capture")
 def capture_donation(donation_id):

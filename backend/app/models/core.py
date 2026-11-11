@@ -81,6 +81,17 @@ class Payout(Timestamped, db.Model):
     submitted_at = db.Column(db.DateTime(timezone=True)); confirmed_at = db.Column(db.DateTime(timezone=True)); failure_reason_code = db.Column(db.String(80))
 
 
+class ProviderWebhookEvent(db.Model):
+    """Provider event de-duplication boundary; payloads are intentionally not retained."""
+    id = db.Column(db.String(36), primary_key=True, default=uuid_str)
+    provider = db.Column(db.String(40), nullable=False)
+    event_id = db.Column(db.String(255), nullable=False)
+    event_type = db.Column(db.String(100), nullable=False)
+    resource_id = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (db.UniqueConstraint("provider", "event_id", name="uq_provider_webhook_event"),)
+
+
 class FinancialLedgerEntry(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=uuid_str)
     campaign_id = db.Column(db.String(36), db.ForeignKey("campaign.id"), nullable=False, index=True)
