@@ -16,6 +16,8 @@ def create_app(config_override=None):
     CORS(app, origins=[app.config["FRONTEND_ORIGIN"]] if app.config.get("FRONTEND_ORIGIN") else [], supports_credentials=False)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     from app.api.v1.routes import api; app.register_blueprint(api, url_prefix="/api/v1")
+    # AI + SMS/USSD integration (Claude scope): /api/v1/ai/*, /api/v1/messaging/*, /api/v1/integrations/status
+    from app.integrations.bootstrap import init_integrations; init_integrations(app)
     @app.get("/health")
     def health(): return jsonify(data={"status": "ok"}, meta={})
     @app.errorhandler(ValueError)

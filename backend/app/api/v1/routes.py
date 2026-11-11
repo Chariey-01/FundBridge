@@ -9,7 +9,7 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
-from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User)
+from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User, uuid_str)
 from app.security.auth import current_user, roles_allowed
 from app.services.ledger import release_payout, reserve_payout
 from app.services.payments import mark_donation_completed
@@ -64,6 +64,11 @@ def me():
 def list_campaigns():
     q=Campaign.query.filter_by(status=CampaignStatus.published)
     if request.args.get("category"): q=q.filter_by(category=request.args["category"])
+    # Plain keyword search (no AI dependency): case-insensitive match on title or description.
+    term=(request.args.get("q") or "").strip()[:100]
+    if term:
+        pattern="%"+term.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
+        q=q.filter(Campaign.title.ilike(pattern,escape="\\") | Campaign.description.ilike(pattern,escape="\\"))
     if request.args.get("q"):
         term=f"%{request.args['q'].strip()}%"
         q=q.filter(or_(Campaign.title.ilike(term), Campaign.description.ilike(term), Campaign.category.ilike(term)))
@@ -134,6 +139,7 @@ def assisted_beneficiary():
         if not linked_user or linked_user.status != "active" or linked_user.role != Role.beneficiary: raise ValueError("BENEFICIARY_ACCOUNT_NOT_ELIGIBLE")
         if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
     x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
+    db.session.add(x); db.session.flush(); db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id,metadata_json={"linked_user":bool(user_id)}))
     db.session.add(x); db.session.flush()
     db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id))
     db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
@@ -152,7 +158,9 @@ def donation_order():
         return ok(serialize_donation(existing))
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
-    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
+    # id is assigned now (not at INSERT) because PayPal must receive it as purchase_units[0].reference_id;
+    # capture later rejects any order whose reference_id is not this donation's id.
+    donation=Donation(id=uuid_str(),campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
     # The provider reference must be the persisted donation id, not a pre-flush None value.
@@ -198,6 +206,7 @@ def update_beneficiary_me():
     x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
     if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
     data=body()
+    # phone_number is deliberately excluded here: it is handled below so a change forces reverification.
     for key in ("display_name","preferred_language"):
         if key in data and isinstance(data[key],str) and data[key].strip(): setattr(x,key,data[key].strip())
     if "phone_number" in data and data["phone_number"] != x.phone_number:
@@ -242,7 +251,9 @@ def reconcile_donation(donation_id):
         if captures and captures[0].get("status") == "COMPLETED":
             mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
             db.session.commit()
-    elif result.get("status") in ("VOIDED", "DENIED"):
+        elif captures and captures[0].get("status") in ("DENIED", "DECLINED"):
+            donation.status=DonationStatus.failed; db.session.commit()
+    elif result.get("status") in ("VOIDED", "DENIED", "CANCELLED"):
         donation.status=DonationStatus.failed; db.session.commit()
     return ok(serialize_donation(donation))
 
