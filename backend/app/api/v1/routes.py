@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, current_app, g, jsonify, request
 from flask_jwt_extended import create_access_token
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
@@ -68,6 +69,9 @@ def list_campaigns():
     if term:
         pattern="%"+term.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
         q=q.filter(Campaign.title.ilike(pattern,escape="\\") | Campaign.description.ilike(pattern,escape="\\"))
+    if request.args.get("q"):
+        term=f"%{request.args['q'].strip()}%"
+        q=q.filter(or_(Campaign.title.ilike(term), Campaign.description.ilike(term), Campaign.category.ilike(term)))
     return ok([serialize_campaign(x) for x in q.order_by(Campaign.published_at.desc()).limit(50)])
 
 @api.get("/campaigns/<campaign_id>")
@@ -136,6 +140,8 @@ def assisted_beneficiary():
         if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
     x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
     db.session.add(x); db.session.flush(); db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id,metadata_json={"linked_user":bool(user_id)}))
+    db.session.add(x); db.session.flush()
+    db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id))
     db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
 
 @api.post("/donations/orders")
@@ -157,7 +163,20 @@ def donation_order():
     donation=Donation(id=uuid_str(),campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
-    order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url","")); donation.provider_order_id=order["id"]
+    # The provider reference must be the persisted donation id, not a pre-flush None value.
+    db.session.add(donation); db.session.flush()
+    order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url",""))
+    order_id=order.get("id")
+    units=order.get("purchase_units") or []
+    unit=units[0] if units else {}
+    provider_amount=(unit.get("amount") or {})
+    try:
+        provider_value=Decimal(str(provider_amount.get("value")))
+    except (InvalidOperation, ValueError, TypeError):
+        provider_value=None
+    if not order_id or unit.get("reference_id") != donation.id or provider_amount.get("currency_code") != donation.currency or provider_value != Decimal(donation.amount):
+        db.session.rollback(); raise ValueError("PAYMENT_ORDER_MISMATCH")
+    donation.provider_order_id=order_id
     db.session.add(donation); db.session.commit(); return ok({**serialize_donation(donation),"approval_url":next((l["href"] for l in order.get("links",[]) if l.get("rel")=="approve"),None)},201)
 
 @api.post("/webhooks/paypal")
@@ -190,14 +209,14 @@ def update_beneficiary_me():
     # phone_number is deliberately excluded here: it is handled below so a change forces reverification.
     for key in ("display_name","preferred_language"):
         if key in data and isinstance(data[key],str) and data[key].strip(): setattr(x,key,data[key].strip())
+    if "phone_number" in data and data["phone_number"] != x.phone_number:
+        if not isinstance(data["phone_number"],str) or not data["phone_number"].strip(): raise ValueError("VALIDATION_ERROR")
+        x.phone_number=data["phone_number"].strip(); x.verification_status="reverification_required"
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.phone_changed",resource_type="beneficiary",resource_id=x.id))
     if "payout_destination_reference" in data and data["payout_destination_reference"] != x.payout_destination_reference:
         if not isinstance(data["payout_destination_reference"],str) or not data["payout_destination_reference"]: raise ValueError("VALIDATION_ERROR")
         x.payout_destination_reference=data["payout_destination_reference"]; x.verification_status="reverification_required"
         db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.payout_destination_changed",resource_type="beneficiary",resource_id=x.id))
-    if "phone_number" in data and data["phone_number"] != x.phone_number:
-        if not isinstance(data["phone_number"],str) or not data["phone_number"]: raise ValueError("VALIDATION_ERROR")
-        x.phone_number=data["phone_number"]; x.verification_status="reverification_required"
-        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.phone_changed",resource_type="beneficiary",resource_id=x.id))
     db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status})
 
 @api.post("/donations/<donation_id>/capture")
@@ -229,10 +248,12 @@ def reconcile_donation(donation_id):
         unit=(result.get("purchase_units") or [{}])[0]
         if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
         captures=(unit.get("payments") or {}).get("captures") or []
-        if not captures: raise ValueError("PAYMENT_NOT_CONFIRMED")
-        mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
-        db.session.commit()
-    elif result.get("status") in ("VOIDED", "DENIED"):
+        if captures and captures[0].get("status") == "COMPLETED":
+            mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
+            db.session.commit()
+        elif captures and captures[0].get("status") in ("DENIED", "DECLINED"):
+            donation.status=DonationStatus.failed; db.session.commit()
+    elif result.get("status") in ("VOIDED", "DENIED", "CANCELLED"):
         donation.status=DonationStatus.failed; db.session.commit()
     return ok(serialize_donation(donation))
 
