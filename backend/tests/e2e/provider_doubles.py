@@ -214,3 +214,40 @@ class OpenAIDouble(_Double):
                      "choices": [{"index": 0, "finish_reason": "stop", "message": {
                          "role": "assistant", "content": json.dumps(self.CANNED[task]), "refusal": None}}],
                      "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+
+class AfricasTalkingDouble(_Double):
+    """Answers ``POST /version1/messaging`` like Africa's Talking's SMS API (form fields, ``apiKey`` header).
+
+    ``mode``: "ok" (statusCode 101 Success), "insufficient_balance" (405 for the recipient) or "auth_error" (HTTP 401).
+    TEST DOUBLE ONLY: it says nothing about Africa's Talking's live behaviour.
+    """
+
+    def __init__(self, username: str, api_key: str):
+        super().__init__()
+        self.username, self.api_key, self.mode = username, api_key, "ok"
+        self.messages: list[dict] = []
+
+    def handle(self, method, path, headers, body):
+        from urllib.parse import parse_qs
+
+        if path != "/version1/messaging" or method != "POST":
+            return 404, {"error": "not found"}
+        if headers.get("apiKey") != self.api_key or self.mode == "auth_error":
+            return 401, {"error": "The supplied authentication is invalid"}
+        form = {k: v[0] for k, v in parse_qs(body if isinstance(body, str) else "").items()}
+        assert form.get("username") == self.username and form.get("to") and form.get("message")
+        with self.lock:
+            self.messages.append(form)
+            count = len(self.messages)
+        if self.mode == "insufficient_balance":
+            recipient = {"statusCode": 405, "number": form["to"], "status": "InsufficientBalance", "cost": "0",
+                         "messageId": "None"}
+        else:
+            recipient = {"statusCode": 101, "number": form["to"], "status": "Success", "cost": "KES 0.8000",
+                         "messageId": f"ATXid_{count:06d}"}
+        return 201, {"SMSMessageData": {"Message": "Sent to 1/1", "Recipients": [recipient]}}
+
+    def to(self, number: str) -> list[str]:
+        with self.lock:
+            return [m["message"] for m in self.messages if m["to"] == number]

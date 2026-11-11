@@ -10,9 +10,9 @@ Nothing in this repository has been run against a real provider account. "Tested
 |---|---|---|---|
 | PayPal donations (Orders v2) | Sandbox adapter. Unconfigured until credentials are set. A donation completes only after a server-side capture or a signature-verified webhook whose order, reference, amount and currency match. | Live e2e suite against a PayPal Orders v2 double: order, approval, capture, capture-before-approval, tampered amount, signed and forged webhooks, replay | PayPal sandbox app (`PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`), a webhook (`PAYPAL_WEBHOOK_ID`), then a real sandbox payment. Production needs a live PayPal business account and app review. |
 | Mobile-money payouts | Labelled simulator. Payouts stop at `approved_for_submission`; there is no submission endpoint, and nothing ever reports `succeeded`. | Reservation, review, rejection release and concurrency tests | A licensed payout provider (for example Safaricom Daraja B2C or an aggregator), credentials, approval, and a submission/callback contract. Not started. |
-| SMS | Simulated gateway (in-memory outbox, per process). An Africa's Talking adapter exists but **has never been run against Africa's Talking**. | Integration and e2e tests through the real callback endpoints | Africa's Talking account, `SMS_PROVIDER=africastalking`, `AT_USERNAME`, `AT_API_KEY`, optionally `AT_SENDER_ID` |
-| USSD | Africa's Talking callback format implemented, plus a simulator. No service code is registered. | e2e: English and Kiswahili menus, PIN, payout status, search, through the authenticated callback | Africa's Talking USSD channel and service code; callback URL with `MESSAGING_CALLBACK_TOKEN` |
-| AI (OpenAI) | Provider implemented; deterministic fallbacks when no key is set or the provider fails. | Mocked transport tests, plus e2e against an OpenAI Chat Completions double (PII redaction checked at the provider boundary, outage fallback) | `OPENAI_API_KEY`; confirm `OPENAI_MODEL` is available to the account and allowed by the event's AI rules |
+| SMS | Simulated gateway by default (in-memory outbox, per process). The Africa's Talking adapter, inbound and delivery-report callbacks are implemented but **have never been run against Africa's Talking**. | Adapter wire tests; callback tests (retries, outages); e2e with gunicorn sending to an Africa's Talking API double | Africa's Talking account and API key; for production, a two-way shortcode. See `docs/integration/africastalking.md`. |
+| USSD | Africa's Talking callback format plus a simulator. No service code is registered. Screens are GSM 7-bit, at most 182 characters. | e2e in English and Kiswahili: menus, PIN setup, lockout and race (PostgreSQL), verification gate, search | Africa's Talking USSD channel and service code (telco approval for production) |
+| AI (OpenAI) | Provider implemented (default model `gpt-5.4-mini`, unverified); deterministic fallbacks when no key is set or the provider fails. | Mocked-transport failure matrix; e2e against an OpenAI double. **No real OpenAI request has been made.** | `OPENAI_API_KEY`, then `flask fundbridge-ai check`. See `docs/integration/openai.md`. |
 
 `GET /api/v1/integrations/status` reports AI and messaging modes at runtime. `GET /api/v1/public/config` reports PayPal and payout modes. Its `feature_phone` flags are always `false`; use `/integrations/status` for SMS/USSD.
 
@@ -54,8 +54,8 @@ Generate secrets with `python3 -c "import secrets; print(secrets.token_urlsafe(3
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PAYPAL_BASE_URL` | for donations | Without the client ID, donation orders return `PAYMENT_PROVIDER_UNCONFIGURED` |
 | `PAYOUT_PROVIDER` | no | `simulator` (only option today) |
 | `MESSAGING_CALLBACK_TOKEN` | for SMS/USSD | Shared secret on gateway callbacks; callbacks return 503 without it |
-| `SMS_PROVIDER`, `AT_*`, `USSD_SERVICE_CODE`, `MESSAGING_*`, `PUBLIC_BASE_URL` | for SMS/USSD | See `.env.example` |
-| `AI_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_*` | no | AI runs in fallback mode without a key |
+| `SMS_PROVIDER`, `AT_USERNAME`, `AT_API_KEY`, `AT_SENDER_ID`, `USSD_SERVICE_CODE`, `MESSAGING_*`, `PUBLIC_BASE_URL` | for SMS/USSD | Validate with `flask fundbridge-messaging check-config`. Keep `PUBLIC_BASE_URL` short: it appears on 182-character USSD screens. |
+| `AI_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, `OPENAI_REASONING_TOKEN_ALLOWANCE`, `AI_*` | no | AI runs in fallback mode without a key. Model decision: `docs/integration/openai.md` |
 | `TRUSTED_PROXY_HOPS` | behind a proxy | Number of proxy hops to trust for the client IP (rate limits, callback allowlist) |
 | `AUTH_LOGIN_LIMIT_PER_IP_PER_MINUTE` (30), `AUTH_LOGIN_FAILURES_PER_ACCOUNT` (5), `AUTH_LOGIN_FAILURE_WINDOW_SECONDS` (900), `AUTH_REGISTER_LIMIT_PER_IP_PER_10_MINUTES` (20), `DONATION_ORDER_LIMIT_PER_IP_PER_MINUTE` (30), `RATE_LIMITS_ENABLED` (true) | no | Sign-in and order throttling. A venue demo behind one NAT address may need higher per-IP values. |
 
@@ -68,18 +68,11 @@ Generate secrets with `python3 -c "import secrets; print(secrets.token_urlsafe(3
 4. Pay with a sandbox personal account. The frontend calls `POST /donations/{id}/capture` on return, then trusts only `GET /donations/{id}` (see `FundBridgeClient.completePayPalReturn`).
 5. Configure the webhook even if capture-on-return works. If a capture times out, the payment may already be captured at PayPal; a retried capture then gets `ORDER_ALREADY_CAPTURED`, and only the webhook moves the donation to `completed` (open item R-1 in `docs/integration/COORDINATION.md`).
 
-### Africa's Talking (sandbox). Not yet exercised from this repository.
-1. Create an account, open the Sandbox app, generate an API key. Use `AT_USERNAME=sandbox`.
-2. USSD: create a sandbox service code with callback `https://<backend-host>/api/v1/messaging/ussd?token=<MESSAGING_CALLBACK_TOKEN>`.
-3. SMS: set the incoming-messages callback to `https://<backend-host>/api/v1/messaging/sms/inbound?token=<MESSAGING_CALLBACK_TOKEN>`.
-4. Set `SMS_PROVIDER=africastalking`, `AT_API_KEY`, optionally `AT_SENDER_ID`.
-5. Sandbox messages do not reach real phones. `submitted` means Africa's Talking accepted a message, not that it was delivered.
-6. Once Africa's Talking's callback source addresses are confirmed, restrict callers with `MESSAGING_ALLOWED_IPS`.
-
-The callback URL carries the secret, so it **must be HTTPS**. Do not log full request URLs for these paths (see Logging).
+### Africa's Talking
+Requirements, callback URLs, the step-by-step sandbox and live test procedure, and what is still unverified: [`docs/integration/africastalking.md`](integration/africastalking.md). Quick checks: `flask fundbridge-messaging check-config --api-host https://<backend-host>` (no network) and `flask fundbridge-messaging send-test --to +254...` (one real SMS).
 
 ### OpenAI
-Set `OPENAI_API_KEY` and confirm `OPENAI_MODEL` (default `gpt-4o-mini`) is available to the account. Calls use Chat Completions with strict JSON-schema output, `store=false`, a 15 s timeout, and PII redaction before the request leaves the server. If a call fails, the feature falls back and responses carry `meta.degraded: true`; translation has no fallback and returns `503 AI_UNAVAILABLE`.
+Configuration, the model decision and how to verify with a real key: [`docs/integration/openai.md`](integration/openai.md). Quick check: `flask fundbridge-ai check` (one real search and one translation; exits 0 only if the model answered).
 
 ## Production deployment
 
@@ -95,7 +88,8 @@ gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT run:app              # start command
 - **Reverse proxy:** set `TRUSTED_PROXY_HOPS` to the real hop count.
 - **HTTPS** for the API, the PayPal webhook and the gateway callbacks.
 - Keep `MESSAGING_SIMULATOR_ENABLED=false` wherever real beneficiary data exists.
-- Existing databases: a database created before backend commit `397ef42` cannot upgrade cleanly if it holds donations (defect M-1). Recreate demo databases instead.
+- Existing databases: upgrades preserve donations, ledger entries and payouts (tested from `18323330d500`). A database created before backend commit `c3e4e3a` keeps an old global idempotency-key constraint after upgrading (open item M-1b in `docs/integration/COORDINATION.md`). Recreate such demo databases.
+- Schedule `flask --app run:app fundbridge-messaging prune-events --days 30` (daily) once Africa's Talking is live.
 
 ## Logging, errors and audit
 
@@ -117,5 +111,6 @@ E2E_DATABASE_URL=postgresql+psycopg://user@127.0.0.1:5432/fundbridge_e2e \
 .venv/bin/python -m pytest tests -q
 ```
 
-- `tests/e2e` starts gunicorn on the migrated database and drives every journey over HTTP, including the TypeScript client (needs Node.js 22.6+; skipped otherwise). It needs `requirements-deploy.txt` installed (falls back to `flask run` without gunicorn).
+- `tests/e2e` starts gunicorn on the migrated database and drives every journey over HTTP, including the TypeScript client (needs Node.js 22.6+; skipped otherwise). A second gunicorn stack sends SMS to an Africa's Talking double. It needs `requirements-deploy.txt` installed (falls back to `flask run` without gunicorn). `cd contracts && npm ci` enables the TypeScript type-check test.
+- Real providers are opt-in and never run by default: `FUNDBRIDGE_LIVE_OPENAI_TESTS=1 OPENAI_API_KEY=... pytest tests/ai/test_openai_live.py`. For Africa's Talking, follow the procedure in `docs/integration/africastalking.md`.
 - Tests marked `xfail` with reason `DEFECT …` reproduce open defects listed in `docs/integration/COORDINATION.md`.

@@ -28,7 +28,8 @@ Authentication is the core backend's JWT: `Authorization: Bearer <access_token>`
       "provider": "fallback", "model": null, "mode": "fallback_only",
       "features": { "campaign_draft": "template_fallback", "translate": "unavailable",
                     "beneficiary_assistant": "rule_based_fallback", "campaign_search": "keyword_fallback" },
-      "supported_languages": { "en": "English", "sw": "Kiswahili", "...": "..." }
+      "supported_languages": { "en": "English", "sw": "Kiswahili", "...": "..." },
+      "model_verified": false, "last_success_at": null, "last_error": null
     },
     "messaging": {
       "sms": { "provider": "simulator", "mode": "simulated", "delivery_confirmed": false },
@@ -39,7 +40,7 @@ Authentication is the core backend's JWT: `Authorization: Bearer <access_token>`
 }
 ```
 
-`ai.mode` is `live` only when an OpenAI key is configured. `sms.mode` is `simulated`, `africastalking_sandbox` (messages reach Africa's Talking's simulator, not phones) or `africastalking_live`.
+`ai.mode` is `live` when an OpenAI key is configured; that alone does not mean it works. `model_verified` becomes `true` after a real model call succeeds in that server process, and `last_error` (`{code, feature, at}`) shows the most recent provider failure. Model, configuration and verification: `openai.md`. `sms.mode` is `simulated`, `africastalking_sandbox` (messages reach Africa's Talking's simulator, not phones) or `africastalking_live`.
 
 ## AI endpoints
 
@@ -105,9 +106,14 @@ Same as `data.ai` in `/integrations/status`.
 | Endpoint | Body (form-encoded) | Response |
 |---|---|---|
 | `POST /messaging/ussd?token=…` | `sessionId, serviceCode, phoneNumber, text` | `text/plain`: `CON …` (continue) or `END …` |
-| `POST /messaging/sms/inbound?token=…` | `from, to, text, date, id, linkId` | `200`; replies go out through the SMS gateway |
+| `POST /messaging/sms/inbound?token=…` | `from, to, text, date, id, linkId, networkCode` | `200`; replies go out through the SMS gateway |
+| `POST /messaging/sms/delivery?token=…` | `id, status, phoneNumber, networkCode, failureReason, retryCount` | `200`; recorded and logged (masked number); `400` if `id`/`status` missing |
+
+Retries are safe: an inbound SMS with an `id` already processed gets no second reply; a repeated USSD PIN step (same `sessionId` and `text`) is not counted as another wrong attempt; repeated help requests within 30 minutes return the same reference. Gateway setup and testing: `africastalking.md`.
 
 The token can also be sent as `X-FundBridge-Callback-Token`. A wrong token returns `403 INVALID_CALLBACK`; no configured token returns `503 MESSAGING_NOT_CONFIGURED`.
+
+Every screen is GSM 7-bit text of at most 182 characters (long titles are shortened; search may show fewer than three results). Options 1 and 2 answer only numbers on a **verified** beneficiary profile; after a phone or payout-destination change the number gets "waiting for verification, contact your agent" until a reviewer re-verifies it.
 
 USSD menu (English and Kiswahili; `0` back, `00` home):
 
@@ -124,7 +130,7 @@ SMS commands: `HELP`/`MSAADA`, `STATUS`/`HALI`, `FIND <word>`/`TAFUTA`, `AGENT`/
 
 ### Notifications sent to beneficiaries
 
-Sent after the database commit, never on rollback:
+Sent after the database commit, never on rollback, and only to verified beneficiary profiles (GSM 7-bit, at most two SMS segments):
 - a donation becomes `completed`: "received a confirmed donation of USD 15.00. Total raised: …";
 - a payout changes status: the status label below. Payout messages are sent even after `STOP` because they are account-security relevant.
 

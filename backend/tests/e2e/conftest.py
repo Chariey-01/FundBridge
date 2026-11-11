@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from .provider_doubles import OpenAIDouble, PayPalDouble
+from .provider_doubles import AfricasTalkingDouble, OpenAIDouble, PayPalDouble
 
 BACKEND = Path(__file__).resolve().parents[2]
 ADMIN_EMAIL = "ops-admin@example.test"
@@ -63,6 +63,7 @@ class Live:
     openai: OpenAIDouble
     log_path: Path
     admin_token: str = ""
+    at: object = None
     session: requests.Session = field(default_factory=requests.Session)
 
     def call(self, method: str, path: str, token: str | None = None, **kwargs) -> requests.Response:
@@ -94,13 +95,10 @@ class Live:
         return self.log_path.read_text(errors="replace")
 
 
-@pytest.fixture(scope="session")
-def live(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("e2e")
-    db_url = os.environ.get("E2E_DATABASE_URL") or f"sqlite:///{tmp / 'e2e.db'}"
+def _start_stack(tmp: Path, db_url: str, extra_env: dict | None = None):
+    """Doubles + migrations + first admin + gunicorn. Returns (Live, stop)."""
     if db_url.startswith("postgresql"):
         _reset_postgres(db_url)
-
     paypal = PayPalDouble("e2e-paypal-client", "e2e-paypal-secret", "WH-E2E-0001").start()
     openai_key = "sk-e2e-" + secrets.token_hex(8)
     openai = OpenAIDouble(openai_key).start()
@@ -133,6 +131,7 @@ def live(tmp_path_factory):
         "AUTH_REGISTER_LIMIT_PER_IP_PER_10_MINUTES": "1000",
         "DONATION_ORDER_LIMIT_PER_IP_PER_MINUTE": "1000",
         "PYTHONUNBUFFERED": "1",
+        **(extra_env or {}),
     }
     flask = [sys.executable, "-m", "flask", "--app", "run:app"]
     for step in (["db", "upgrade", "-d", "migrations"], ["fundbridge-admin", "create-admin", "--email", ADMIN_EMAIL]):
@@ -160,15 +159,39 @@ def live(tmp_path_factory):
 
     harness = Live(base=base, env=env, paypal=paypal, openai=openai, log_path=log_path)
     harness.admin_token = harness.login(ADMIN_EMAIL)
-    yield harness
 
-    server.terminate()
-    server.wait(timeout=10)
-    log_file.close()
-    paypal.stop()
-    openai.stop()
-    if db_url.startswith("postgresql"):
-        _reset_postgres(db_url)
+    def stop():
+        server.terminate()
+        server.wait(timeout=10)
+        log_file.close()
+        paypal.stop()
+        openai.stop()
+        if db_url.startswith("postgresql"):
+            _reset_postgres(db_url)
+
+    return harness, stop
+
+
+@pytest.fixture(scope="session")
+def live(tmp_path_factory):
+    tmp = tmp_path_factory.mktemp("e2e")
+    harness, stop = _start_stack(tmp, os.environ.get("E2E_DATABASE_URL") or f"sqlite:///{tmp / 'e2e.db'}")
+    yield harness
+    stop()
+
+
+@pytest.fixture(scope="module")
+def live_at(tmp_path_factory):
+    """A second stack whose SMS go to an Africa's Talking double over HTTP (SQLite; the gateway path is the subject)."""
+    tmp = tmp_path_factory.mktemp("e2e_at")
+    at = AfricasTalkingDouble("sandbox", "at-e2e-" + secrets.token_hex(8)).start()
+    harness, stop = _start_stack(tmp, f"sqlite:///{tmp / 'e2e_at.db'}", {
+        "SMS_PROVIDER": "africastalking", "AT_USERNAME": at.username, "AT_API_KEY": at.api_key,
+        "AT_API_BASE_URL": at.url, "AT_SENDER_ID": "40123", "MESSAGING_SIMULATOR_ENABLED": "false"})
+    harness.at = at
+    yield harness
+    stop()
+    at.stop()
 
 
 def _has_module(name: str) -> bool:
