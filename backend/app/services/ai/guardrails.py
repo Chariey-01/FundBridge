@@ -52,11 +52,19 @@ _UNSAFE_CLAIM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     ("guarantee", re.compile(r"(?i)\b(guarantee[ds]?|100\s*%\s*(safe|secure|legit)|risk[- ]free)\b")),
-    # Kiswahili: "imetumwa" (has been sent), "imelipwa" (has been paid),
-    # "umepokea" (you have received), "imeidhinishwa" (has been approved).
+    # Kiswahili perfect-tense passives: "-metumwa" (has been sent), "-melipwa" (has been paid),
+    # "-meidhinishwa" (approved), "-methibitishwa" (confirmed), "-mepokelewa" (received), "-mekamilika"
+    # (completed), "-meingizwa"/"-mewekwa" (deposited). The subject prefix follows the noun class, so all
+    # of them are matched: "pesa imetumwa", "pesa zimetumwa", "malipo yamelipwa", "mchango umethibitishwa".
+    # Plus "you/he/she have received / been sent": "umepokea", "mmepokea", "amepokea", "umetumiwa".
+    # Native-speaker review: docs/integration/kiswahili-review.md.
     (
         "financial_completion",
-        re.compile(r"(?i)\b(imetumwa|imelipwa|umepokea|umelipwa|imeidhinishwa|imethibitishwa)\b"),
+        re.compile(
+            r"(?i)\b(?:i|zi|ya|u|li|ki|vi|wa|a|m)me"
+            r"(?:tumwa|tumiwa|lipwa|idhinishwa|thibitishwa|pokelewa|kamilika|ingizwa|wekwa)\b"
+            r"|\b(?:u|m|a)mepokea\b"
+        ),
     ),
 )
 

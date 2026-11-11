@@ -31,7 +31,11 @@ set -a; . ./.env; set +a
 .venv/bin/flask --app run:app run --port 5000
 ```
 
-Optional demo data: `flask --app run:app fundbridge-demo seed` creates `demo-<role>@example.test` accounts, a verified beneficiary on `+254712345678` and two published campaigns. It creates **no donations, ledger entries or payouts** and refuses to run with `FLASK_ENV=production`. Phone demo: set `MESSAGING_SIMULATOR_ENABLED=true` and open `http://localhost:5000/api/v1/messaging/simulator`.
+Optional demo data: `flask --app run:app fundbridge-demo seed` creates `demo-<role>@example.test` accounts (password from `DEMO_PASSWORD`, or printed), verified beneficiaries on `+254712345678` (English) and `+254712345679` (Kiswahili), two published campaigns, one submitted and one draft. It creates **no donations, ledger entries or payouts** and refuses to run with `FLASK_ENV=production`. `--scenarios` adds labelled demo donations and payouts (provider `demo_seed`, not payments); see `docs/DEMO_SCRIPT.md`. Phone demo: set `MESSAGING_SIMULATOR_ENABLED=true` and open `http://localhost:5000/api/v1/messaging/simulator`. Check a running server with `python scripts/smoke_test.py --base-url http://localhost:5000 --password "$DEMO_PASSWORD" --callback-token "$MESSAGING_CALLBACK_TOKEN"`.
+
+These steps were last run from a clean clone on 2026-11-11 against PostgreSQL 16, followed by the plain seed and the smoke test: 21 PASS, 2 SKIP (translation needs an OpenAI key; the PayPal order is opt-in), 0 FAIL. Flask prints "Install python-dotenv to use them" because a `.env` file exists; this is harmless, since the `set -a; . ./.env` step already loaded it.
+
+The Kiswahili SMS/USSD text and AI fallbacks have **not** been reviewed by a native speaker. Get `docs/integration/kiswahili-review.md` reviewed before real beneficiaries use the phone channels.
 
 ## Accounts and roles
 
@@ -115,4 +119,4 @@ E2E_DATABASE_URL=postgresql+psycopg://user@127.0.0.1:5432/fundbridge_e2e \
 
 - `tests/e2e` starts gunicorn on the migrated database and drives every journey over HTTP, including the TypeScript client (needs Node.js 22.6+; skipped otherwise). A second gunicorn stack sends SMS to an Africa's Talking double. It needs `requirements-deploy.txt` installed (falls back to `flask run` without gunicorn). `cd contracts && npm ci` enables the TypeScript type-check test.
 - Real providers are opt-in and never run by default: `FUNDBRIDGE_LIVE_OPENAI_TESTS=1 OPENAI_API_KEY=... pytest tests/ai/test_openai_live.py`. For Africa's Talking, follow the procedure in `docs/integration/africastalking.md`.
-- Tests marked `xfail` with reason `DEFECT …` reproduce open defects listed in `docs/integration/COORDINATION.md`.
+- Tests marked `xfail` with reason `GAP …` are proposed API contracts not yet implemented (G-6, G-7); see `docs/integration/COORDINATION.md`. Against `feat/backend-core` `7115094` no `DEFECT …` xfail remains open.

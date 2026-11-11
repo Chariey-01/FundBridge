@@ -48,6 +48,24 @@ def test_unsafe_claims_detected_in_english_and_kiswahili():
     assert find_unsafe_claims("Open Payout status to see confirmed details.") == []
 
 
+def test_kiswahili_completion_claims_in_every_noun_class():
+    """Regression: only i-class forms ("imetumwa") were caught, so "malipo yameidhinishwa" passed."""
+    for claim in ("Malipo yako yameidhinishwa.", "Pesa zimetumwa kwenye M-Pesa yako.", "Malipo yamelipwa.",
+                  "Mchango umethibitishwa.", "Malipo yamekamilika.", "Pesa imeingizwa kwenye akaunti yako.",
+                  "Mmepokea michango.", "Amina amepokea pesa.", "Umetumiwa KES 500.", "Wamelipwa leo."):
+        assert "financial_completion" in find_unsafe_claims(claim), claim
+    for safe in ("Fungua Hali ya malipo uone taarifa zilizothibitishwa.", "Malipo yanasubiri ukaguzi.",
+                 "Wasiliana na wakala wako.", "Mmea huu unahitaji maji.", "Kampeni inakaguliwa."):
+        assert find_unsafe_claims(safe) == [], safe
+
+
+def test_kiswahili_fallback_replies_do_not_trip_the_guardrail():
+    from app.services.ai.fallback import _ASSISTANT_REPLIES
+
+    for reply in _ASSISTANT_REPLIES["sw"].values():
+        assert find_unsafe_claims(reply) == [], reply
+
+
 def test_extract_amounts():
     assert extract_amounts("We need $1,500.50 and KES 2000 plus 30 dollars") == [
         Decimal("1500.50"), Decimal("2000"), Decimal("30")

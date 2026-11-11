@@ -5,20 +5,24 @@
 
 | Branch | Owner | Latest known / verified | Notes |
 |---|---|---|---|
-| `feat/backend-core` | Codex | **`b45ee29`**, verified by this branch's full suite | canonical backend |
-| `feat/frontend-core` | Cursor | **not published** (Cursor reported `0633e6e` locally) | nothing could be verified |
+| `feat/backend-core` | Codex | **`7115094`**, merged and verified by this branch's full suite | canonical backend; PR #8 (→ `main`) open |
+| `feat/frontend-core` | Cursor | **not on the remote** (checked 2026-11-11 evening with `git ls-remote`; no frontend branch of any name) | nothing could be verified |
 | `feat/ai-integration-qa` | AI, messaging, integration, demo infrastructure | see `git log`; PR **#7** (→ `feat/backend-core`) is open | byte-identical to `feat/backend-core` in every backend-owned file |
-| `main` | maintainer | `6f3c335` | **lacks `b45ee29`**: deploy from `feat/backend-core` until it is merged |
+| `main` | maintainer | `6f3c335` | **lacks `b45ee29`..`7115094`**: deploy from `feat/backend-core` until PR #8 is merged |
 
 ### Integration blockers, by severity
-1. `main` lacks `b45ee29`, so it cannot create real PayPal orders (C-4b) and writes duplicate onboarding audit rows (X-1). Owner: maintainer, merging `feat/backend-core` → `main`.
-2. The frontend is unpublished: no browser walkthrough (`FRONTEND_WALKTHROUGH.md`). Owner: Cursor.
+1. `main` lacks `b45ee29`..`7115094` (C-4b, X-1, R-2, S-5, X-2, M-1b, M-2 fixes). Owner: maintainer, merging PR #8 (`feat/backend-core` → `main`).
+2. The frontend is not published, so no route, payload, loading/error state or "no false success" rule has been checked against Cursor's code, and there is no browser walkthrough (`FRONTEND_WALKTHROUGH.md`). Owner: Cursor.
 3. **G-6** (beneficiary campaign list) and **G-7** (reviewer queue) are missing, which blocks the web beneficiary payout and reviewer screens. Proposed contracts are in `tests/integration/test_proposed_contract_gaps.py`. Owner: Codex. Demo workaround: the campaign IDs the seed prints.
-4. **R-2** and **S-5**: HTTP 500 on concurrent reconcile or same-key orders (money safe). Owner: Codex.
-5. **X-2**, **M-1b**, **M-2**. Owner: Codex.
-6. Credentials: PayPal sandbox, OpenAI key, Africa's Talking account, shortcode and USSD code, payout provider. Owner: project owner.
+4. Credentials: PayPal sandbox, OpenAI key, Africa's Talking account, shortcode and USSD code, payout provider. Owner: project owner.
+5. Kiswahili wording has not been reviewed by a native speaker: `kiswahili-review.md`. Owner: project owner.
 
 ### Work completed on this branch (most recent first)
+- **Final sprint (2026-11-11 evening):**
+  - merged `7115094`; R-2, S-5 and X-2 xfails now pass and are kept as regression tests;
+  - fixed an AI guardrail gap: Kiswahili "money moved" claims were only caught in the i- noun class (`imetumwa`), so "malipo yameidhinishwa" or "pesa zimetumwa" passed; now every noun class is covered, with a regression test;
+  - `kiswahili-review.md`, generated from the code, for a native-speaker reviewer;
+  - clean-checkout check of `docs/DEPLOYMENT.md` "Local setup" on a fresh PostgreSQL database: migrate, create-admin, check-config, plain seed (0 financial rows), smoke test 21 PASS / 2 SKIP / 0 FAIL.
 - **Demo infrastructure:**
   - `fundbridge-demo seed --scenarios`: labelled demo donations and payouts created through the core services;
   - `scripts/smoke_test.py`;
@@ -33,6 +37,9 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 ### Test runs
 | When | Backend commit | Branch commit | Suite | Result |
 |---|---|---|---|---|
+| 2026-11-11 evening | `7115094` | merge `078d215` (before the guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | 285 passed, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 3 failed = the R-2, S-5 and X-2 strict xfails now passing; converted to regression tests, then `tests/e2e` 28/28 and `test_live_found_defects` + `test_migrations` all pass |
+| 2026-11-11 evening | `7115094` | this commit | `tests/ai`, `tests/messaging`, AI/messaging integration | 141 passed, 4 skipped (opt-in real OpenAI) |
+| 2026-11-11 evening | `7115094` | merge `078d215` | clean clone → `DEPLOYMENT.md` local setup → `scripts/smoke_test.py` | 21 PASS, 2 SKIP (translation without a key; PayPal order is opt-in), 0 FAIL |
 | 2026-11-11 | `b45ee29` | `dbaa6e1` plus the docs and contract-gap tests in the next commit | `pytest tests`, PostgreSQL 16.15 (integration and e2e), gunicorn | **275 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 8 xfailed (R-2, S-5, X-2, M-2, M-1b ×2, G-6, G-7) |
 | 2026-11-11 | `b45ee29` | same | `contracts`: `npm test` | tsc --strict ✅, 11/11 |
 | 2026-11-11 | `b45ee29` | same | e2e `test_demo_smoke`: seed CLI, then `scripts/smoke_test.py` against gunicorn | 23 PASS, 0 SKIP (PayPal and OpenAI were local doubles) |
@@ -47,7 +54,7 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 
 ## For Codex (canonical backend)
 
-### Status of every tracked item against `b45ee29`
+### Status of every tracked item against `7115094`
 
 | ID | Item | Status |
 |---|---|---|
@@ -56,26 +63,25 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 | X-1 | Duplicate onboarding audit | **Fixed** (b45ee29), verified |
 | P-1 | Phone reverification | Fixed, verified |
 | M-1 | Upgrade with existing data | Fixed, verified on SQLite and PostgreSQL |
-| **X-2** | Two `?q=` filters ANDed in `list_campaigns()` | **Open**: strict xfail `test_keyword_search_matches_category_as_ported` |
-| **R-2** | Parallel reconciles → HTTP 500 | **Open, new**: see below |
-| **S-5** | Parallel same-key orders → HTTP 500 instead of replay | **Open, new**: see below |
-| M-1b | Old global idempotency uniqueness survives upgrade | Open: strict xfail |
-| M-2 | PostgreSQL full rollback leaves enum types | Open: strict xfail |
+| X-2 | Two `?q=` filters ANDed in `list_campaigns()` | **Fixed** (4bae876), regression test `test_keyword_search_matches_category_as_ported` |
+| R-2 | Parallel reconciles → HTTP 500 | **Fixed** (4bae876, 7115094), regression test `test_parallel_reconciliations_never_return_500` (PostgreSQL, gunicorn) |
+| S-5 | Parallel same-key orders → HTTP 500 instead of replay | **Fixed** (4bae876), regression test `test_parallel_orders_with_one_key_replay_instead_of_500` |
+| M-1b | Old global idempotency uniqueness survives upgrade | **Fixed** (e4a6c8d9f012), verified on SQLite and PostgreSQL |
+| M-2 | PostgreSQL full rollback leaves enum types | **Fixed** (7115094), verified on PostgreSQL |
 
-### R-2 (medium, new): parallel reconciliations return HTTP 500
+No backend defect found by this branch is open against `7115094`. The sections on R-2 and S-5 below are kept for the record.
+
+### R-2 (fixed in 4bae876/7115094): parallel reconciliations returned HTTP 500
 - Where: `backend/app/api/v1/routes.py` `reconcile_donation()`. Two requests both read `pending`, both call `mark_donation_completed`, and the second `db.session.commit()` raises `IntegrityError` (`UniqueViolation` on the ledger credit).
 - Money is safe: the unique constraints keep it to one credit, and the e2e test checks that. But clients get `500 INTERNAL_ERROR` for a benign race, and the logs fill with errors.
 - Reproduce on PostgreSQL: `E2E_DATABASE_URL=... pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_reconciliations_never_return_500 --runxfail` → 7 of 8 responses are 500.
 - Suggestion: lock the donation row (`with_for_update()`) and re-check its status before calling the provider, or catch `IntegrityError`, roll back, re-read and return the donation. Capture has the same shape: it only avoids the race today because PayPal answers repeat captures with 422.
 
-### S-5 (medium, new): parallel orders with one Idempotency-Key return HTTP 500
+### S-5 (fixed in 4bae876): parallel orders with one Idempotency-Key returned HTTP 500
 - Where: `routes.py` `donation_order()` at `db.session.add(donation); db.session.flush()`. On PostgreSQL the second insert waits for the first transaction, then raises `UniqueViolation` on `uq_donation_donor_idempotency`.
 - Exactly one donation is created, which is correct, but the other callers get 500 instead of the replayed donation the contract promises. A double-clicked "Donate" button or a retried request on a slow network hits this.
 - Reproduce: `pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_orders_with_one_key_replay_instead_of_500 --runxfail` (PostgreSQL) → 7 of 8 are 500.
 - Suggestion: on `IntegrityError` at that flush, roll back, re-select by `(donor_id, idempotency_key)`, check the fingerprint, and return the existing donation. The PayPal order created by the losing request is never used.
-
-### X-2: duplicate search filters
-`list_campaigns()` applies both the escaped title/description filter and the ported title/description/category filter. Delete one, keep the escaping and the 100-character cap (`test_keyword_search_without_ai`), and keep category matching if wanted (`test_keyword_search_matches_category_as_ported`).
 
 ### API gaps found while reviewing the frontend contract (not defects, missing capabilities)
 Proposed contracts, executable as strict xfails in `tests/integration/test_proposed_contract_gaps.py` (they XPASS when implemented in this shape; adjust them together with `contracts/` if you choose another shape):
@@ -86,11 +92,8 @@ Proposed contracts, executable as strict xfails in `tests/integration/test_propo
 - **G-7:** there is no reviewer queue; `GET /campaigns` lists only published campaigns. Suggestion: `GET /campaigns?status=submitted` for reviewers and admins.
 - **G-8:** no lookup by `slug`, no pagination beyond 50 results, and no timestamps (`created_at`, `published_at`) in campaign, donation and payout payloads.
 
-### M-1b and M-2
-Unchanged; see the strict xfails in `tests/integration/test_migrations.py`.
-
 ### Migration chain
-The head is `c3f1a9e7d2b4`. Chain new migrations after it; `test_single_alembic_head` guards this.
+The head is `e4a6c8d9f012` (after the messaging tables, `c3f1a9e7d2b4`). Chain new migrations after it; `test_single_alembic_head` guards this.
 
 ## For Cursor (frontend)
 

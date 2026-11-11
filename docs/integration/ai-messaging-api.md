@@ -115,7 +115,7 @@ The token can also be sent as `X-FundBridge-Callback-Token`. A wrong token retur
 
 Every screen is GSM 7-bit text of at most 182 characters (long titles are shortened; search may show fewer than three results). Options 1 and 2 answer only numbers on a **verified** beneficiary profile; after a phone or payout-destination change the number gets "waiting for verification, contact your agent" until a reviewer re-verifies it.
 
-USSD menu (English and Kiswahili; `0` back, `00` home):
+USSD menu (English and Kiswahili; `0` back, `00` home). The Kiswahili text awaits native-speaker review: `kiswahili-review.md`.
 
 ```
 1. My campaign        -> status and confirmed raised total (from the ledger)
