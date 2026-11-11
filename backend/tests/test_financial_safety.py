@@ -3,6 +3,7 @@ from app.extensions import db
 from app.models.core import Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus
 from app.services.ledger import available_funds, reserve_payout
 from app.services.payments import mark_donation_completed
+from app.services.payouts import apply_provider_status
 
 def test_completed_donation_creates_credit(app):
     with app.app_context():
@@ -32,3 +33,16 @@ def test_capture_amount_or_currency_mismatch_cannot_credit(app):
             except ValueError: pass
             else: raise AssertionError("invalid capture credited")
         assert d.status == DonationStatus.pending
+
+def test_donation_to_ledger_to_payout_failure_lifecycle(app):
+    with app.app_context():
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Lifecycle campaign",slug="lifecycle-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published)
+        db.session.add(c); db.session.flush()
+        d=Donation(campaign_id=c.id,amount=Decimal("12"),currency="USD",provider="paypal",provider_order_id="lifecycle-order",idempotency_key="lifecycle-donation",status=DonationStatus.pending)
+        db.session.add(d); db.session.flush(); mark_donation_completed(d,order_id="lifecycle-order",capture={"id":"lifecycle-capture","status":"COMPLETED","amount":{"currency_code":"USD","value":"12.00"}}); db.session.flush()
+        assert available_funds(c.id,"USD") == Decimal("12.00")
+        p=Payout(campaign_id=c.id,beneficiary_id="beneficiary",amount=Decimal("12"),currency="USD",destination_type="wallet",destination_reference="token",provider="simulator",idempotency_key="lifecycle-payout",status=PayoutStatus.requested)
+        db.session.add(p); db.session.flush(); reserve_payout(p); p.status=PayoutStatus.submitted
+        assert available_funds(c.id,"USD") == Decimal("0.00")
+        apply_provider_status(p,"FAILED",failure_reason="provider_reconciled_failure"); db.session.commit()
+        assert available_funds(c.id,"USD") == Decimal("12.00")
