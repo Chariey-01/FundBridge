@@ -44,7 +44,7 @@ Authentication is the core backend's JWT: `Authorization: Bearer <access_token>`
 ## AI endpoints
 
 Rate limits: 10/min per signed-in user, 20/min per IP for anonymous calls (`429 RATE_LIMITED`, `Retry-After` header).
-Errors: `400 VALIDATION_ERROR` (with `details`), `401 AUTHENTICATION_REQUIRED`, `413 PAYLOAD_TOO_LARGE`, `429 RATE_LIMITED`, `503 AI_UNAVAILABLE` (translation only).
+Errors: `400 VALIDATION_ERROR` (with `details`), `401 AUTH_REQUIRED` / `INVALID_TOKEN` / `TOKEN_EXPIRED` and `403 ACCOUNT_INACTIVE` (same codes as the core API), `413 PAYLOAD_TOO_LARGE`, `429 RATE_LIMITED`, `503 AI_UNAVAILABLE` (translation only).
 
 Every success has `meta`: `{ "provider": "openai" | "fallback" | "none", "model": string | null, "ai_generated": bool, "degraded": bool, "fallback_reason"?: string }`. `degraded: true` means a configured provider failed and the fallback answered.
 
@@ -140,7 +140,6 @@ Sent after the database commit, never on rollback:
 | pending_confirmation | Awaiting confirmation. Do not request again |
 | succeeded | Paid to your mobile money account |
 | failed | Not completed. Your agent will help you |
-| cancelled | Cancelled |
 
 Use the same meanings in the web UI. Only `succeeded` may say the money arrived.
 

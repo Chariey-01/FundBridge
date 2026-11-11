@@ -12,7 +12,8 @@ export interface ApiError {
   error: { code: ErrorCode | string; message: string; details: Record<string, string[] | number> };
 }
 export type ErrorCode =
-  | "VALIDATION_ERROR" | "AUTHENTICATION_REQUIRED" | "FORBIDDEN" | "NOT_FOUND" | "PAYLOAD_TOO_LARGE"
+  | "VALIDATION_ERROR" | "AUTH_REQUIRED" | "INVALID_TOKEN" | "TOKEN_EXPIRED" | "ACCOUNT_INACTIVE"
+  | "FORBIDDEN" | "NOT_FOUND" | "PAYLOAD_TOO_LARGE"
   | "RATE_LIMITED" | "AI_UNAVAILABLE" | "INVALID_CALLBACK" | "MESSAGING_NOT_CONFIGURED";
 
 export type LanguageCode = "en" | "sw" | "fr" | "ar" | "es" | "pt" | "am" | "so" | "ha" | "yo" | "lg" | "rw" | "zu";
@@ -26,7 +27,7 @@ export type AssistantAction =
 /** Shared payout state machine (core backend PayoutStatus). Only "succeeded" means money arrived. */
 export type PayoutStatus =
   | "requested" | "under_review" | "rejected" | "approved_for_submission"
-  | "submitted" | "pending_confirmation" | "failed" | "succeeded" | "cancelled";
+  | "submitted" | "pending_confirmation" | "failed" | "succeeded";
 /** Core backend DonationStatus. Only "completed" may be shown as a successful donation. */
 export type DonationStatus =
   | "created" | "pending" | "completed" | "failed" | "cancelled" | "refunded" | "partially_refunded";
@@ -127,5 +128,4 @@ export const PAYOUT_STATUS_LABEL_EN: Record<PayoutStatus, string> = {
   pending_confirmation: "Awaiting confirmation. Do not request again",
   succeeded: "Paid to your mobile money account",
   failed: "Not completed. Your agent will help you",
-  cancelled: "Cancelled",
 };

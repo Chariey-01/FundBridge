@@ -176,7 +176,8 @@ def update_beneficiary_me():
     x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
     if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
     data=body()
-    for key in ("display_name","phone_number","preferred_language"):
+    # phone_number is deliberately excluded here: it is handled below so a change forces reverification.
+    for key in ("display_name","preferred_language"):
         if key in data and isinstance(data[key],str) and data[key].strip(): setattr(x,key,data[key].strip())
     if "payout_destination_reference" in data and data["payout_destination_reference"] != x.payout_destination_reference:
         if not isinstance(data["payout_destination_reference"],str) or not data["payout_destination_reference"]: raise ValueError("VALIDATION_ERROR")

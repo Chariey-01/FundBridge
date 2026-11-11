@@ -37,7 +37,7 @@ def test_status_reports_fallback_mode_when_no_provider(fallback_client):
 def test_draft_requires_authentication(client):
     res = client.post("/api/v1/ai/campaign-draft", json=DRAFT_BODY)
     assert res.status_code == 401
-    assert res.get_json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+    assert res.get_json()["error"]["code"] == "AUTH_REQUIRED"
 
 
 def test_validation_errors_use_contract_envelope(client):

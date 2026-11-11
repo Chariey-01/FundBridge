@@ -12,7 +12,7 @@ from flask import Blueprint, Flask, current_app, request
 from pydantic import BaseModel, ValidationError
 
 from app.integrations.ai.factory import build_ai_provider
-from app.integrations.http_envelope import error, ok, validation_details
+from app.integrations.http_envelope import error, ok, unauthenticated, validation_details
 from app.services.ai.ports import Actor, ActorResolver, CampaignCatalog
 from app.services.ai.schemas import (
     AssistantRequest,
@@ -107,7 +107,7 @@ def _run(fn: Callable[[], dict], rate_key: str, *, public: bool):
 def _require_actor():
     actor = _actor()
     if actor is None:
-        return None, error("AUTHENTICATION_REQUIRED", "Sign in to use this feature.", 401)
+        return None, unauthenticated()
     return actor, None
 
 

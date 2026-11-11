@@ -20,7 +20,7 @@ from typing import Any
 
 from flask import Blueprint, Flask, Response, current_app, request
 
-from app.integrations.http_envelope import error, ok
+from app.integrations.http_envelope import error, ok, unauthenticated
 from app.integrations.messaging.callback_auth import ip_allowed, token_matches
 from app.integrations.messaging.gateways import AfricasTalkingSmsGateway, SimulatedSmsGateway
 from app.services.ai.ports import ActorResolver, CampaignCatalog
@@ -201,7 +201,7 @@ def messaging_status():
 def _require_roles(*roles: str):
     actor = _ext()["actor_resolver"]()
     if actor is None:
-        return None, error("AUTHENTICATION_REQUIRED", "Sign in to use this feature.", 401)
+        return None, unauthenticated()
     if actor.role not in roles:
         return None, error("FORBIDDEN", "You are not authorized to perform this action.", 403)
     return actor, None

@@ -81,6 +81,24 @@ def jwt_actor_resolver() -> Actor | None:
     return Actor(user.id, _value(user.role))
 
 
+def jwt_auth_failure() -> tuple[str, str, int]:
+    """Classify why a request has no usable caller, using the same codes as the core JWT loaders."""
+    from flask_jwt_extended import verify_jwt_in_request
+    from flask_jwt_extended.exceptions import NoAuthorizationError
+    from jwt import ExpiredSignatureError
+
+    try:
+        verify_jwt_in_request()
+    except NoAuthorizationError:
+        return "AUTH_REQUIRED", "Authentication is required.", 401
+    except ExpiredSignatureError:
+        return "TOKEN_EXPIRED", "Authentication has expired.", 401
+    except Exception:  # malformed, wrong signature, wrong token type, bad header
+        return "INVALID_TOKEN", "Authentication is invalid.", 401
+    # A valid token whose user no longer exists or is not active (core: PermissionError ACCOUNT_INACTIVE).
+    return "ACCOUNT_INACTIVE", "You are not authorized to perform this action.", 403
+
+
 class SqlCampaignCatalog:
     def search(self, filters: SearchFilters, limit: int) -> Sequence[PublicCampaignSummary]:
         query = Campaign.query.filter(Campaign.status == CampaignStatus.published)

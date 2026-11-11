@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from flask import jsonify
+from flask import current_app, jsonify
 from pydantic import ValidationError
 
 
@@ -25,6 +25,22 @@ def error(code: str, message: str, status: int, details: dict[str, Any] | None =
     for key, value in (headers or {}).items():
         response.headers[key] = value
     return response
+
+
+AUTH_FAILURE_EXTENSION = "fundbridge.auth_failure"
+
+
+def unauthenticated():
+    """Error response when a protected AI/messaging route has no usable caller.
+
+    The host app may register a classifier under ``AUTH_FAILURE_EXTENSION`` returning
+    ``(code, message, status)`` so these routes use the same codes as the core JWT
+    loaders (AUTH_REQUIRED, INVALID_TOKEN, TOKEN_EXPIRED, ACCOUNT_INACTIVE). Without one,
+    every failure is reported as AUTH_REQUIRED.
+    """
+    classify = current_app.extensions.get(AUTH_FAILURE_EXTENSION)
+    code, message, status = classify() if classify else ("AUTH_REQUIRED", "Authentication is required.", 401)
+    return error(code, message, status)
 
 
 def validation_details(exc: ValidationError) -> dict[str, list[str]]:

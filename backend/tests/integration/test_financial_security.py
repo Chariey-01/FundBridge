@@ -3,6 +3,7 @@
 Tests marked ``xfail(strict=True, reason="DEFECT ...")`` document confirmed defects in
 the current core backend. They are expected to fail today; when the defect is fixed the
 test passes, strict mode reports XPASS as a failure, and the marker must be removed.
+Tests commented "Was DEFECT ..." are regressions for defects that have been fixed.
 """
 
 from __future__ import annotations
@@ -188,27 +189,28 @@ def test_registration_cannot_choose_privileged_role(client):
     assert res.get_json()["data"]["role"] == "donor"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT S-1: idempotency keys are global, not scoped to the caller; another "
-                                       "user replaying a key receives someone else's payout record")
 def test_idempotency_key_is_scoped_to_caller(client, seeded):
+    # Was DEFECT S-1; fixed in feat/backend-core c3e4e3a.
     fund(seeded["campaign"], "100.00", "f7")
-    request_payout(client, seeded, "30.00", "leaky-key")
+    first = request_payout(client, seeded, "30.00", "leaky-key").get_json()["data"]
     res = request_payout(client, seeded, "30.00", "leaky-key", email="admin@example.test")
-    assert res.status_code != 200 or res.get_json()["data"].get("beneficiary_id") is None
+    assert res.status_code == 201, "another actor's identical key must create its own resource, not replay"
+    assert res.get_json()["data"]["id"] != first["id"]
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT S-2: reusing an Idempotency-Key with a different amount silently "
-                                       "returns the original payout instead of rejecting the mismatched request")
 def test_idempotency_key_reuse_with_different_body_rejected(client, seeded):
+    # Was DEFECT S-2; fixed in feat/backend-core c3e4e3a (400 IDEMPOTENCY_KEY_REUSED).
     fund(seeded["campaign"], "100.00", "f8")
-    request_payout(client, seeded, "30.00", "reused-key")
+    first = request_payout(client, seeded, "30.00", "reused-key")
     res = request_payout(client, seeded, "90.00", "reused-key")
-    assert res.status_code in (409, 422)
+    assert res.status_code == 400 and res.get_json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    replay = request_payout(client, seeded, "30.00", "reused-key")
+    assert replay.status_code == 200 and replay.get_json()["data"]["id"] == first.get_json()["data"]["id"]
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("70.00")
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT S-3: an admin can request a payout and then approve it; the contract "
-                                       "requires that nobody approves their own payout submission")
 def test_requester_cannot_approve_own_payout(client, seeded):
+    # Was DEFECT S-3; fixed in feat/backend-core c3e4e3a.
     fund(seeded["campaign"], "100.00", "f9")
     payout_id = request_payout(client, seeded, "10.00", "self", email="admin@example.test").get_json()["data"]["id"]
     res = client.post(f"/api/v1/payouts/{payout_id}/review", json={"decision": "approve"},
@@ -229,18 +231,26 @@ def test_unverified_beneficiary_cannot_request_payout(client, seeded):
 # ----------------------------------------------------------- contract envelope
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT A-1: missing/invalid JWT returns flask_jwt_extended's {'msg': ...} "
-                                       "body, not the contract error envelope")
 def test_unauthenticated_core_request_uses_error_envelope(client):
+    # Was DEFECT A-1; fixed in feat/backend-core c3e4e3a.
     res = client.get("/api/v1/auth/me")
-    assert res.status_code == 401
-    assert res.get_json()["error"]["code"] in ("AUTHENTICATION_REQUIRED", "INVALID_TOKEN")
+    assert res.status_code == 401 and res.get_json()["error"]["code"] == "AUTH_REQUIRED"
+    res = client.get("/api/v1/auth/me", headers={"Authorization": "Bearer not-a-jwt"})
+    assert res.status_code == 401 and res.get_json()["error"]["code"] == "INVALID_TOKEN"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT A-2: wrong password returns 403 INVALID_CREDENTIALS instead of 401")
+def test_unknown_resource_uses_error_envelope(client, seeded):
+    # Was DEFECT A-3; fixed in feat/backend-core c3e4e3a.
+    res = client.get("/api/v1/payouts/does-not-exist", headers=auth(client, "admin@example.test"))
+    assert res.status_code == 404 and res.get_json()["error"]["code"] == "NOT_FOUND"
+
+
 def test_bad_login_is_401(client, seeded):
-    res = client.post("/api/v1/auth/login", json={"email": "creator@example.test", "password": "wrong-password!!"})
-    assert res.status_code == 401
+    # Was DEFECT A-2; fixed in feat/backend-core c3e4e3a. Unknown account and wrong password look identical.
+    wrong = client.post("/api/v1/auth/login", json={"email": "creator@example.test", "password": "wrong-password!!"})
+    unknown = client.post("/api/v1/auth/login", json={"email": "nobody@example.test", "password": "wrong-password!!"})
+    assert wrong.status_code == unknown.status_code == 401
+    assert wrong.get_json() == unknown.get_json()
 
 
 def test_errors_do_not_leak_internals(client, seeded):
@@ -253,13 +263,26 @@ def test_errors_do_not_leak_internals(client, seeded):
 # ------------------------------------------------------------ phone channel identity
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT P-1: PATCH /beneficiaries/me changes phone_number without any "
-                                       "re-verification; that number controls SMS/USSD access and notifications")
 def test_phone_change_requires_reverification(client, seeded):
+    # Was DEFECT P-1. c3e4e3a added a reverification branch, but the generic field loop above it had already
+    # written phone_number, so the branch compared the new value with itself and never ran.
     res = client.patch("/api/v1/beneficiaries/me", json={"phone_number": "+254799999999"},
                        headers=auth(client, "beneficiary@example.test"))
     profile = db.session.get(BeneficiaryProfile, seeded["beneficiary"].id)
-    assert res.status_code in (400, 403) or profile.verification_status != "verified"
+    assert res.status_code == 200 and res.get_json()["data"]["verification_status"] == "reverification_required"
+    assert profile.phone_number == "+254799999999" and profile.verification_status == "reverification_required"
+    from app.models.core import AuditLog
+    assert AuditLog.query.filter_by(action="beneficiary.phone_changed", resource_id=profile.id).count() == 1
+    fund(seeded["campaign"], "100.00", "after-phone-change")
+    assert request_payout(client, seeded, "10.00", "after-phone-change").get_json()["error"]["code"] == \
+        "BENEFICIARY_NOT_VERIFIED"
+
+
+def test_unchanged_phone_keeps_verification(client, seeded):
+    res = client.patch("/api/v1/beneficiaries/me", json={"phone_number": seeded["beneficiary"].phone_number,
+                                                          "display_name": "Renamed"},
+                       headers=auth(client, "beneficiary@example.test"))
+    assert res.get_json()["data"]["verification_status"] == "verified"
 
 
 def test_destination_change_requires_reverification(client, seeded):

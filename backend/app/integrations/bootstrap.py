@@ -16,7 +16,14 @@ def init_integrations(flask_app: Flask) -> None:
     from app.api.v1.ai import init_ai
     from app.api.v1.messaging import _flag, _setting, init_messaging
 
-    from .core_adapters import SqlBeneficiaryDirectory, SqlCampaignCatalog, SqlMessagingStore, jwt_actor_resolver
+    from .core_adapters import (
+        SqlBeneficiaryDirectory,
+        SqlCampaignCatalog,
+        SqlMessagingStore,
+        jwt_actor_resolver,
+        jwt_auth_failure,
+    )
+    from .http_envelope import AUTH_FAILURE_EXTENSION
     from .notifications import register_notification_hooks
 
     hops = int(_setting(flask_app, "TRUSTED_PROXY_HOPS", 0) or 0)
@@ -26,6 +33,9 @@ def init_integrations(flask_app: Flask) -> None:
         from werkzeug.middleware.proxy_fix import ProxyFix
 
         flask_app.wsgi_app = ProxyFix(flask_app.wsgi_app, x_for=hops, x_proto=hops, x_host=hops)
+
+    # AI/messaging 401s use the same codes as core (AUTH_REQUIRED / INVALID_TOKEN / TOKEN_EXPIRED).
+    flask_app.extensions[AUTH_FAILURE_EXTENSION] = jwt_auth_failure
 
     catalog = SqlCampaignCatalog()
     ai_service = init_ai(flask_app, actor_resolver=jwt_actor_resolver, campaign_catalog=catalog)
