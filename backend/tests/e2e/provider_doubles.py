@@ -95,6 +95,14 @@ class PayPalDouble(_Double):
         with self.lock:
             self.orders[order_id]["status"] = "APPROVED"
 
+    def capture_out_of_band(self, order_id: str) -> None:
+        """PayPal captured the order but the backend never saw the response (for example a timeout)."""
+        with self.lock:
+            order = self.orders[order_id]
+            order["status"] = "COMPLETED"
+            order["capture"] = {"id": "CAP-OOB-" + uuid.uuid4().hex[:8].upper(), "status": "COMPLETED",
+                                "amount": dict(order["unit"]["amount"])}
+
     def handle(self, method, path, headers, body):
         with self.lock:
             self.requests.append({"method": method, "path": path})

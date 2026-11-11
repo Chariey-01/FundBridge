@@ -7,6 +7,8 @@ import random
 import uuid
 from decimal import Decimal
 
+import pytest
+
 from .provider_doubles import VALID_WEBHOOK_SIGNATURE
 
 
@@ -219,6 +221,18 @@ def test_paypal_webhook_requires_verified_signature_and_is_idempotent(live):
     assert live.call("POST", "/api/v1/webhooks/paypal", json=event, headers=signed).status_code == 204
     assert _ok(live.call("GET", f"/api/v1/donations/{donation['id']}", donor["token"]))["status"] == "completed"
     assert _funds(live, cid)["raised"] == "15.00"
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT R-1: when PayPal captured but the backend missed the response (timeout), "
+                                       "a retried capture gets 422 ORDER_ALREADY_CAPTURED and the donation stays pending "
+                                       "unless the webhook arrives; capture should fetch the order and verify it")
+def test_capture_retry_after_provider_side_capture_completes_donation(live):
+    world = _published_campaign(live, title_word="Bursary")
+    donor = live.account("donor")
+    donation, order_id = _donate(live, donor, world["campaign"]["id"], "9.00", capture=False)
+    live.paypal.capture_out_of_band(order_id)
+    live.call("POST", f"/api/v1/donations/{donation['id']}/capture", donor["token"])
+    assert _ok(live.call("GET", f"/api/v1/donations/{donation['id']}", donor["token"]))["status"] == "completed"
 
 
 def test_payout_request_review_reservation_and_tracking(live):
