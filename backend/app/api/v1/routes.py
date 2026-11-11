@@ -157,7 +157,20 @@ def donation_order():
     donation=Donation(id=uuid_str(),campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
-    order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url","")); donation.provider_order_id=order["id"]
+    # The provider reference must be the persisted donation id, not a pre-flush None value.
+    db.session.add(donation); db.session.flush()
+    order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url",""))
+    order_id=order.get("id")
+    units=order.get("purchase_units") or []
+    unit=units[0] if units else {}
+    provider_amount=(unit.get("amount") or {})
+    try:
+        provider_value=Decimal(str(provider_amount.get("value")))
+    except (InvalidOperation, ValueError, TypeError):
+        provider_value=None
+    if not order_id or unit.get("reference_id") != donation.id or provider_amount.get("currency_code") != donation.currency or provider_value != Decimal(donation.amount):
+        db.session.rollback(); raise ValueError("PAYMENT_ORDER_MISMATCH")
+    donation.provider_order_id=order_id
     db.session.add(donation); db.session.commit(); return ok({**serialize_donation(donation),"approval_url":next((l["href"] for l in order.get("links",[]) if l.get("rel")=="approve"),None)},201)
 
 @api.post("/webhooks/paypal")
@@ -229,9 +242,9 @@ def reconcile_donation(donation_id):
         unit=(result.get("purchase_units") or [{}])[0]
         if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
         captures=(unit.get("payments") or {}).get("captures") or []
-        if not captures: raise ValueError("PAYMENT_NOT_CONFIRMED")
-        mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
-        db.session.commit()
+        if captures and captures[0].get("status") == "COMPLETED":
+            mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
+            db.session.commit()
     elif result.get("status") in ("VOIDED", "DENIED"):
         donation.status=DonationStatus.failed; db.session.commit()
     return ok(serialize_donation(donation))

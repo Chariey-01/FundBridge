@@ -11,6 +11,31 @@ def token(app, user):
 def test_donation_order_requires_valid_authentication(client):
     response=client.post("/api/v1/donations/orders", headers={"Idempotency-Key":"a"}, json={})
     assert response.status_code == 401
+
+def test_paypal_order_uses_persisted_donation_reference_and_validates_response(app, client):
+    with app.app_context():
+        app.config["PAYPAL_CLIENT_ID"] = "sandbox-client"
+        user=User(email="order@test",role=Role.donor); db.session.add(user); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="order-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.commit(); auth=token(app,user); campaign_id=c.id
+    def provider_order(donation, *_):
+        assert donation.id
+        return {"id":"paypal-order-1","purchase_units":[{"reference_id":donation.id,"amount":{"currency_code":"USD","value":"5.00"}}],"links":[]}
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.create_order", side_effect=provider_order):
+        response=client.post("/api/v1/donations/orders",headers={"Authorization":f"Bearer {auth}","Idempotency-Key":"order-1"},json={"campaign_id":campaign_id,"amount":"5.00","currency":"USD"})
+    assert response.status_code == 201
+    with app.app_context():
+        donation=Donation.query.filter_by(provider_order_id="paypal-order-1").one()
+        assert donation.id
+
+def test_paypal_order_mismatch_is_rejected_without_persisting_donation(app, client):
+    with app.app_context():
+        app.config["PAYPAL_CLIENT_ID"] = "sandbox-client"
+        user=User(email="order-mismatch@test",role=Role.donor); db.session.add(user); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="order-mismatch",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.commit(); auth=token(app,user); campaign_id=c.id
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.create_order", return_value={"id":"paypal-order-2","purchase_units":[{"reference_id":"wrong","amount":{"currency_code":"USD","value":"5.00"}}]}):
+        response=client.post("/api/v1/donations/orders",headers={"Authorization":f"Bearer {auth}","Idempotency-Key":"order-2"},json={"campaign_id":campaign_id,"amount":"5.00","currency":"USD"})
+    assert response.status_code == 400 and response.json["error"]["code"] == "PAYMENT_ORDER_MISMATCH"
+    with app.app_context(): assert Donation.query.filter_by(idempotency_key="order-2").count() == 0
     response=client.post("/api/v1/donations/orders", headers={"Authorization":"Bearer invalid","Idempotency-Key":"a"}, json={})
     assert response.status_code == 401
 
@@ -74,5 +99,15 @@ def test_paypal_reconciliation_keeps_ambiguous_order_pending(app, client):
         c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="pending-reconcile",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.flush()
         d=Donation(campaign_id=c.id,donor_id=user.id,amount=Decimal("5.00"),currency="USD",provider="paypal",provider_order_id="order-pending",idempotency_key="pending",idempotency_fingerprint="fp",status=DonationStatus.pending); db.session.add(d); db.session.commit(); donation_id=d.id; auth=token(app,user)
     with patch("app.api.v1.routes.PayPalSandboxAdapter.get_order", return_value={"status":"APPROVED"}):
+        response=client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"})
+    assert response.status_code == 200 and response.json["data"]["status"] == "pending"
+
+def test_paypal_reconciliation_with_incomplete_capture_stays_pending(app, client):
+    with app.app_context():
+        user=User(email="capture-pending@test",role=Role.donor); db.session.add(user); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="capture-pending",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.flush()
+        d=Donation(campaign_id=c.id,donor_id=user.id,amount=Decimal("5.00"),currency="USD",provider="paypal",provider_order_id="order-capture-pending",idempotency_key="capture-pending",idempotency_fingerprint="fp",status=DonationStatus.pending); db.session.add(d); db.session.commit(); donation_id=d.id; auth=token(app,user)
+    result={"status":"COMPLETED","purchase_units":[{"reference_id":donation_id,"payments":{"captures":[{"id":"capture-pending","status":"PENDING","amount":{"currency_code":"USD","value":"5.00"}}]}}]}
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.get_order", return_value=result):
         response=client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"})
     assert response.status_code == 200 and response.json["data"]["status"] == "pending"
