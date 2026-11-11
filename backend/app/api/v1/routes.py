@@ -97,6 +97,11 @@ def submit_campaign(campaign_id):
     if u.id != x.creator_id or x.status != CampaignStatus.draft: raise PermissionError("FORBIDDEN")
     x.status=CampaignStatus.submitted; x.review_status="pending"; db.session.add(AuditLog(actor_id=u.id,action="campaign.submitted",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x))
 
+@api.get("/me/campaigns")
+def my_campaigns():
+    u=current_user()
+    return ok([serialize_campaign(x) for x in Campaign.query.filter_by(creator_id=u.id).order_by(Campaign.created_at.desc()).all()])
+
 @api.post("/beneficiaries")
 @roles_allowed(Role.agent,Role.admin)
 def assisted_beneficiary():
@@ -179,6 +184,17 @@ def capture_donation(donation_id):
     mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id); db.session.commit()
     return ok(serialize_donation(donation))
 
+@api.get("/donations/<donation_id>")
+def donation_detail(donation_id):
+    u=current_user(); donation=Donation.query.get_or_404(donation_id)
+    if donation.donor_id != u.id and u.role not in (Role.admin,Role.reviewer): raise PermissionError("FORBIDDEN")
+    return ok(serialize_donation(donation))
+
+@api.get("/me/donations")
+def my_donations():
+    u=current_user()
+    return ok([serialize_donation(x) for x in Donation.query.filter_by(donor_id=u.id).order_by(Donation.created_at.desc()).all()])
+
 @api.post("/payouts")
 @roles_allowed(Role.beneficiary,Role.admin)
 def request_payout():
@@ -205,3 +221,20 @@ def review_payout(payout_id):
     elif decision == "approve": p.status=PayoutStatus.approved_for_submission
     else: raise ValueError("VALIDATION_ERROR")
     db.session.add(AuditLog(actor_id=g.current_user.id,action=f"payout.{decision}",resource_type="payout",resource_id=p.id)); db.session.commit(); return ok(serialize_payout(p))
+
+@api.get("/payouts")
+def list_payouts():
+    u=current_user(); query=Payout.query
+    if u.role not in (Role.admin,Role.reviewer):
+        beneficiary=BeneficiaryProfile.query.filter_by(user_id=u.id).first()
+        if not beneficiary: return ok([])
+        query=query.filter_by(beneficiary_id=beneficiary.id)
+    return ok([serialize_payout(x) for x in query.order_by(Payout.created_at.desc()).all()])
+
+@api.get("/payouts/<payout_id>")
+def payout_detail(payout_id):
+    u=current_user(); payout=Payout.query.get_or_404(payout_id)
+    if u.role not in (Role.admin,Role.reviewer):
+        beneficiary=BeneficiaryProfile.query.filter_by(user_id=u.id).first()
+        if not beneficiary or beneficiary.id != payout.beneficiary_id: raise PermissionError("FORBIDDEN")
+    return ok(serialize_payout(payout))
