@@ -126,3 +126,13 @@ def test_paypal_reconciliation_with_incomplete_capture_stays_pending(app, client
     with patch("app.api.v1.routes.PayPalSandboxAdapter.get_order", return_value=result):
         response=client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"})
     assert response.status_code == 200 and response.json["data"]["status"] == "pending"
+
+def test_paypal_reconciliation_denied_capture_fails_without_credit(app, client):
+    with app.app_context():
+        user=User(email="capture-denied@test",role=Role.donor); db.session.add(user); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="capture-denied",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.flush()
+        d=Donation(campaign_id=c.id,donor_id=user.id,amount=Decimal("5.00"),currency="USD",provider="paypal",provider_order_id="order-capture-denied",idempotency_key="capture-denied",idempotency_fingerprint="fp",status=DonationStatus.pending); db.session.add(d); db.session.commit(); donation_id=d.id; auth=token(app,user)
+    result={"status":"COMPLETED","purchase_units":[{"reference_id":donation_id,"payments":{"captures":[{"id":"capture-denied","status":"DENIED","amount":{"currency_code":"USD","value":"5.00"}}]}}]}
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.get_order", return_value=result):
+        response=client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"})
+    assert response.status_code == 200 and response.json["data"]["status"] == "failed"

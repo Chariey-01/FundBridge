@@ -242,7 +242,9 @@ def reconcile_donation(donation_id):
         if captures and captures[0].get("status") == "COMPLETED":
             mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
             db.session.commit()
-    elif result.get("status") in ("VOIDED", "DENIED"):
+        elif captures and captures[0].get("status") in ("DENIED", "DECLINED"):
+            donation.status=DonationStatus.failed; db.session.commit()
+    elif result.get("status") in ("VOIDED", "DENIED", "CANCELLED"):
         donation.status=DonationStatus.failed; db.session.commit()
     return ok(serialize_donation(donation))
 
