@@ -19,6 +19,14 @@ def init_integrations(flask_app: Flask) -> None:
     from .core_adapters import SqlBeneficiaryDirectory, SqlCampaignCatalog, SqlMessagingStore, jwt_actor_resolver
     from .notifications import register_notification_hooks
 
+    hops = int(_setting(flask_app, "TRUSTED_PROXY_HOPS", 0) or 0)
+    if hops > 0:
+        # Behind a reverse proxy (Railway/Render/nginx): trust exactly this many X-Forwarded-* hops so
+        # remote_addr is the real client for IP rate limits and the callback IP allowlist.
+        from werkzeug.middleware.proxy_fix import ProxyFix
+
+        flask_app.wsgi_app = ProxyFix(flask_app.wsgi_app, x_for=hops, x_proto=hops, x_host=hops)
+
     catalog = SqlCampaignCatalog()
     ai_service = init_ai(flask_app, actor_resolver=jwt_actor_resolver, campaign_catalog=catalog)
     init_messaging(

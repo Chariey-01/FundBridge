@@ -208,3 +208,13 @@ def test_support_requests_visible_to_agents_only(client, seeded):
     rows = client.get("/api/v1/messaging/support-requests",
                       headers=auth(client, "agent@example.test")).get_json()["data"]
     assert rows[0]["topic"] == "sim_change" and rows[0]["priority"] == "high"
+
+
+def test_proxy_hops_make_allowlist_see_client_ip(make_app):
+    client = make_app(MESSAGING_ALLOWED_IPS="10.0.0.0/8", TRUSTED_PROXY_HOPS="1").test_client()
+    res = client.post(f"/api/v1/messaging/ussd?token={CALLBACK_TOKEN}",
+                      data={"phoneNumber": BENEFICIARY_PHONE, "text": ""}, headers={"X-Forwarded-For": "10.1.2.3"})
+    assert res.status_code == 200
+    res = client.post(f"/api/v1/messaging/ussd?token={CALLBACK_TOKEN}",
+                      data={"phoneNumber": BENEFICIARY_PHONE, "text": ""}, headers={"X-Forwarded-For": "8.8.8.8"})
+    assert res.status_code == 403
