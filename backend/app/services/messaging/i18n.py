@@ -14,6 +14,8 @@ TEXT: dict[str, dict[str, str]] = {
                      "5. Get help\n6. Language/Lugha",
         "not_linked": "This number is not linked to a FundBridge beneficiary. Contact your community agent "
                       "or choose 5 for help.",
+        "not_verified": "This number is waiting for verification by FundBridge. Contact your community agent "
+                        "or choose 5 for help.",
         "no_campaigns": "No campaigns are linked to your number yet.",
         "choose_campaign": "Choose a campaign:",
         "campaign_status": "{title}\nStatus: {status}\nRaised: {raised} of {goal}",
@@ -58,6 +60,8 @@ TEXT: dict[str, dict[str, str]] = {
                      "5. Msaada\n6. Language/Lugha",
         "not_linked": "Nambari hii haijaunganishwa na mnufaika wa FundBridge. Wasiliana na wakala wako au "
                       "chagua 5 kwa msaada.",
+        "not_verified": "Nambari hii inasubiri kuthibitishwa na FundBridge. Wasiliana na wakala wako au "
+                        "chagua 5 kwa msaada.",
         "no_campaigns": "Hakuna kampeni iliyounganishwa na nambari yako bado.",
         "choose_campaign": "Chagua kampeni:",
         "campaign_status": "{title}\nHali: {status}\nImechangiwa: {raised} kati ya {goal}",

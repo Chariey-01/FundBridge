@@ -161,9 +161,18 @@ class MessagingService:
             return UssdReply(t(new_lang, "language_set"), True)
         return UssdReply(t(lang, "invalid"), True)
 
+    @staticmethod
+    def _verified(beneficiary: BeneficiaryRecord) -> bool:
+        # A phone number only identifies a beneficiary once that profile is verified. After a phone or
+        # payout-destination change the profile is "reverification_required" and the new number gets nothing
+        # beneficiary-specific (no campaign or payout details, no PIN setup) until an agent re-verifies it.
+        return beneficiary.verification_status == "verified"
+
     def _ussd_campaigns(self, lang: str, beneficiary: BeneficiaryRecord | None, rest: list[str]) -> UssdReply:
         if beneficiary is None:
             return UssdReply(t(lang, "not_linked"), True)
+        if not self._verified(beneficiary):
+            return UssdReply(t(lang, "not_verified"), True)
         campaigns = list(self.directory.campaigns_for(beneficiary.id))[:5]
         if not campaigns:
             return UssdReply(t(lang, "no_campaigns"), True)
@@ -179,6 +188,8 @@ class MessagingService:
     def _ussd_payout(self, lang: str, beneficiary: BeneficiaryRecord | None, rest: list[str]) -> UssdReply:
         if beneficiary is None:
             return UssdReply(t(lang, "not_linked"), True)
+        if not self._verified(beneficiary):
+            return UssdReply(t(lang, "not_verified"), True)
         if self.pins.has_pin(beneficiary.id):
             if not rest:
                 return UssdReply(t(lang, "pin_enter"), False)
@@ -275,6 +286,8 @@ class MessagingService:
         if command in ("STATUS", "HALI"):
             if beneficiary is None:
                 return [t(lang, "not_linked")]
+            if not self._verified(beneficiary):
+                return [t(lang, "not_verified")]
             campaigns = list(self.directory.campaigns_for(beneficiary.id))[:3]
             if not campaigns:
                 return [t(lang, "no_campaigns")]

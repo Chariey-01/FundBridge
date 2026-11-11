@@ -96,6 +96,10 @@ def _render(service, beneficiary, template: str, essential: bool = False, **para
     from app.services.messaging.i18n import payout_status_label, phone_language, t
     from app.services.messaging.phone import normalize_msisdn
 
+    if beneficiary.verification_status != "verified":
+        # Never send beneficiary-specific messages to a number that has not been (re)verified.
+        log.info("Notification withheld: beneficiary %s is %s", beneficiary.id, beneficiary.verification_status)
+        return None
     msisdn = normalize_msisdn(beneficiary.phone_number, service.settings.default_country)
     if msisdn is None:
         return None
