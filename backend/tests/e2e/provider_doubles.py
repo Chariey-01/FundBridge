@@ -98,6 +98,12 @@ class PayPalDouble(_Double):
     def handle(self, method, path, headers, body):
         with self.lock:
             self.requests.append({"method": method, "path": path})
+        if path.startswith("/test/orders/") and path.endswith("/approve"):  # double-only: the donor approves at PayPal
+            order_id = path.split("/")[3]
+            if order_id not in self.orders:
+                return 404, {"name": "RESOURCE_NOT_FOUND"}
+            self.approve(order_id)
+            return 200, {"id": order_id, "status": "APPROVED"}
         if path == "/v1/oauth2/token":
             expected = "Basic " + base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
             if headers.get("Authorization") != expected or "grant_type=client_credentials" not in (body or ""):
