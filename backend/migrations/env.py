@@ -11,7 +11,10 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-fileConfig(config.config_file_name)
+# Keep application loggers alive when migrations run in-process (for example in
+# deployment health checks and integration tests).  Alembic's default disables
+# every logger absent from alembic.ini, including ``fundbridge.http``.
+fileConfig(config.config_file_name, disable_existing_loggers=False)
 logger = logging.getLogger('alembic.env')
 
 
