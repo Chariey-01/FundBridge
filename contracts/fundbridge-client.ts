@@ -24,9 +24,16 @@ import type {
   CampaignSearchRequest,
   CampaignSearchResult,
   DonationStatus,
+  AIStatus,
   IntegrationStatus,
+  MessagingStatus,
   Money,
   PayoutStatus,
+  SimulatedSms,
+  SimulatorMeta,
+  SimulatorSmsReply,
+  SimulatorUssdReply,
+  SupportRequest,
   Translation,
   TranslateRequest,
 } from "./ai-messaging.types.ts";
@@ -235,22 +242,37 @@ export class FundBridgeClient {
   getDonation(id: string) { return this.data<Donation>("GET", `/api/v1/donations/${encodeURIComponent(id)}`); }
   myDonations() { return this.data<Donation[]>("GET", "/api/v1/me/donations"); }
 
+  /** Re-reads the order from PayPal after an ambiguous capture. Never captures again; never credits twice. */
+  reconcileDonation(id: string) { return this.data<Donation>("POST", `/api/v1/donations/${encodeURIComponent(id)}/reconcile`); }
+
   /**
-   * Call on the PayPal return page. Asks the server to capture, then re-reads the donation; the
-   * result is "confirmed" only when the server reports "completed". Query parameters PayPal adds
-   * to the return URL are never used as evidence.
+   * Call on the PayPal return page. Asks the server to capture; if the result is ambiguous (timeout, or
+   * PayPal says the order was already captured) it asks the server to reconcile with PayPal. Then it
+   * re-reads the donation: the result is "confirmed" only when the server reports "completed".
+   * Query parameters PayPal adds to the return URL are never used as evidence.
    */
   async completePayPalReturn(donationId: string): Promise<{ outcome: PayPalReturnOutcome; donation: Donation; presentation: StatusPresentation; error?: ApiError }> {
     let outcome: PayPalReturnOutcome = "pending";
     let failure: ApiError | undefined;
+    let ambiguous = false;
     try {
       await this.captureDonation(donationId);
     } catch (e) {
       if (!(e instanceof ApiError) || e.sessionInvalid || e.status === 403 || e.status === 404) throw e;
       failure = e;
-      if (e.code === "PROVIDER_REQUEST_REJECTED" && e.details["provider_issue"] === "ORDER_NOT_APPROVED") outcome = "not_approved";
-      else if (e.code === "PROVIDER_UNAVAILABLE" || e.code === "PROVIDER_REQUEST_REJECTED") outcome = "provider_unavailable";
+      const issue = e.details["provider_issue"];
+      if (e.code === "PROVIDER_REQUEST_REJECTED" && issue === "ORDER_NOT_APPROVED") outcome = "not_approved";
+      else if (e.code === "PROVIDER_REQUEST_REJECTED" && issue === "ORDER_ALREADY_CAPTURED") ambiguous = true;
+      else if (e.code === "PROVIDER_UNAVAILABLE") { outcome = "provider_unavailable"; ambiguous = true; }
+      else if (e.code === "PROVIDER_REQUEST_REJECTED") outcome = "provider_unavailable";
       else if (e.code.startsWith("PAYMENT_")) outcome = "needs_review";
+    }
+    if (ambiguous) {
+      try {
+        await this.reconcileDonation(donationId);
+      } catch (e) {
+        if (!(e instanceof ApiError) || e.sessionInvalid) throw e; // otherwise keep the donation pending; re-check later
+      }
     }
     const donation = await this.getDonation(donationId);
     if (donation.status === "completed") outcome = "confirmed";
@@ -282,7 +304,27 @@ export class FundBridgeClient {
   findAccounts(filter: { email?: string; phone_number?: string }) { return this.data<AccountSummary[]>("GET", "/api/v1/admin/users", { query: filter }); }
   assignRole(userId: string, role: Role) { return this.data<AccountSummary>("PUT", `/api/v1/admin/users/${encodeURIComponent(userId)}/role`, { body: { role } }); }
 
+  // feature phones (staff)
+  messagingStatus() { return this.data<MessagingStatus>("GET", "/api/v1/messaging/status"); }
+  supportRequests() { return this.data<SupportRequest[]>("GET", "/api/v1/messaging/support-requests"); }
+  resetPhonePin(beneficiaryId: string) { return this.data<{ beneficiary_id: string; pin: "reset" }>("POST", `/api/v1/messaging/beneficiaries/${encodeURIComponent(beneficiaryId)}/pin-reset`); }
+
+  // Phone simulator: only when the server enables it (404 otherwise). Every result is simulated; label it.
+  async simulateUssd(phoneNumber: string, text: string, sessionId?: string) {
+    const r = await this.request<SimulatorUssdReply>("POST", "/api/v1/messaging/simulator/ussd", { body: { phone_number: phoneNumber, text, session_id: sessionId } });
+    return { reply: r.data, meta: r.meta as unknown as SimulatorMeta };
+  }
+  async simulateSms(phoneNumber: string, text: string) {
+    const r = await this.request<SimulatorSmsReply>("POST", "/api/v1/messaging/simulator/sms", { body: { phone_number: phoneNumber, text } });
+    return { reply: r.data, meta: r.meta as unknown as SimulatorMeta };
+  }
+  async simulatorOutbox(phoneNumber: string) {
+    const r = await this.request<SimulatedSms[]>("GET", "/api/v1/messaging/simulator/outbox", { query: { phone_number: phoneNumber } });
+    return { messages: r.data, meta: r.meta as unknown as SimulatorMeta };
+  }
+
   // AI (optional; callers should catch ApiError and fall back to the plain form/search)
+  aiStatus() { return this.data<AIStatus>("GET", "/api/v1/ai/status"); }
   async draftCampaign(input: CampaignDraftRequest) { const r = await this.request<CampaignDraft>("POST", "/api/v1/ai/campaign-draft", { body: input }); return { draft: r.data, meta: r.meta as unknown as AIMeta }; }
   async translate(input: TranslateRequest) { const r = await this.request<Translation>("POST", "/api/v1/ai/translate", { body: input }); return { translation: r.data, meta: r.meta as unknown as AIMeta }; }
   async askAssistant(input: AssistantRequest) { const r = await this.request<AssistantReply>("POST", "/api/v1/ai/beneficiary-assistant", { body: input }); return { reply: r.data, meta: r.meta as unknown as AIMeta }; }

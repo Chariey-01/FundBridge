@@ -68,6 +68,29 @@ test("a capture mismatch needs review and is not success", async () => {
   assert.equal((await client.completePayPalReturn("d1")).outcome, "needs_review");
 });
 
+test("an already-captured order is reconciled and confirmed only by the re-read", async () => {
+  const seen: string[] = [];
+  const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
+    "POST /api/v1/donations/d1/capture": { status: 502, body: { error: { code: "PROVIDER_REQUEST_REJECTED", message: "x", details: { provider_status: 422, provider_issue: "ORDER_ALREADY_CAPTURED" } } } },
+    "POST /api/v1/donations/d1/reconcile": donation("completed"),
+    "GET /api/v1/donations/d1": donation("completed"),
+  }, seen) });
+  const result = await client.completePayPalReturn("d1");
+  assert.equal(result.outcome, "confirmed");
+  assert.deepEqual(seen, ["POST /api/v1/donations/d1/capture", "POST /api/v1/donations/d1/reconcile", "GET /api/v1/donations/d1"]);
+});
+
+test("a timeout is reconciled; a failed reconcile leaves the donation pending, not failed", async () => {
+  const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
+    "POST /api/v1/donations/d1/capture": { status: 503, body: { error: { code: "PROVIDER_UNAVAILABLE", message: "x", details: {} } } },
+    "POST /api/v1/donations/d1/reconcile": { status: 400, body: { error: { code: "PAYMENT_NOT_CONFIRMED", message: "x", details: {} } } },
+    "GET /api/v1/donations/d1": donation("pending"),
+  }) });
+  const result = await client.completePayPalReturn("d1");
+  assert.equal(result.outcome, "provider_unavailable");
+  assert.equal(result.presentation.tone, "pending");
+});
+
 test("an expired session triggers onSessionInvalid once and throws", async () => {
   const calls: string[] = [];
   const client = new FundBridgeClient({ baseUrl: "http://api", token: "old",

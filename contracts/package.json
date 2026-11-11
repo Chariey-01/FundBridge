@@ -1,0 +1,15 @@
+{
+  "name": "@fundbridge/contracts",
+  "private": true,
+  "type": "module",
+  "description": "Typed FundBridge API client and contracts for the web frontend",
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "tsc -p . && node --disable-warning=ExperimentalWarning --test fundbridge-client.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.6.3"
+  }
+}

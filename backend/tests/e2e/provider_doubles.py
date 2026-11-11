@@ -113,6 +113,12 @@ class PayPalDouble(_Double):
                 return 404, {"name": "RESOURCE_NOT_FOUND"}
             self.approve(order_id)
             return 200, {"id": order_id, "status": "APPROVED"}
+        if path.startswith("/test/orders/") and path.endswith("/capture-out-of-band"):  # double-only: lost response
+            order_id = path.split("/")[3]
+            if order_id not in self.orders:
+                return 404, {"name": "RESOURCE_NOT_FOUND"}
+            self.capture_out_of_band(order_id)
+            return 200, {"id": order_id, "status": "COMPLETED"}
         if path == "/v1/oauth2/token":
             expected = "Basic " + base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
             if headers.get("Authorization") != expected or "grant_type=client_credentials" not in (body or ""):

@@ -57,3 +57,10 @@ def test_client_against_live_api(live):
         "FB_API": live.base, "FB_PAYPAL_DOUBLE": live.paypal.url, "FB_CAMPAIGN_ID": cid,
         "FB_DONOR_EMAIL": donor["email"], "FB_BENEFICIARY_EMAIL": world["beneficiary"]["email"],
         "FB_PASSWORD": PASSWORD, "FB_PAYOUT_ID": payout["id"]})
+
+
+def test_contracts_and_examples_typecheck():
+    tsc = CONTRACTS / "node_modules" / ".bin" / "tsc"
+    if not tsc.exists():
+        pytest.skip("run `npm ci` in contracts/ to type-check the client, contracts and examples")
+    _run([str(tsc), "-p", "."])

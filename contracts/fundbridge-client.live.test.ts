@@ -50,6 +50,25 @@ test("donor journey through the client: browse, donate via PayPal, confirm from 
   assert.deepEqual(sessionErrors, []);
 });
 
+test("a capture whose response was lost is reconciled and confirmed by the server", async () => {
+  const client = new FundBridgeClient({ baseUrl: env("FB_API") });
+  await client.login(env("FB_DONOR_EMAIL"), env("FB_PASSWORD"));
+  const campaignId = env("FB_CAMPAIGN_ID");
+  const before = (await client.campaignFunds(campaignId)).balance.raised;
+  const order = await client.createDonationOrder({ campaign_id: campaignId, amount: "3.25", currency: "USD",
+    return_url: "http://localhost:3000/donate/return", cancel_url: "http://localhost:3000/donate/cancel" },
+    FundBridgeClient.newIdempotencyKey());
+  const orderId = new URL(order.approval_url!).searchParams.get("token")!;
+  for (const step of ["approve", "capture-out-of-band"]) {
+    assert.equal((await fetch(`${env("FB_PAYPAL_DOUBLE")}/test/orders/${orderId}/${step}`, { method: "POST" })).status, 200);
+  }
+  const done = await client.completePayPalReturn(order.id);
+  assert.equal(done.outcome, "confirmed");
+  assert.equal(done.error?.details["provider_issue"], "ORDER_ALREADY_CAPTURED");
+  const after = (await client.campaignFunds(campaignId)).balance.raised;
+  assert.equal(cents(after) - cents(before), 325n);
+});
+
 test("beneficiary sees server payout status and labelled simulated channels", async () => {
   const client = new FundBridgeClient({ baseUrl: env("FB_API") });
   await client.login(env("FB_BENEFICIARY_EMAIL"), env("FB_PASSWORD"));
@@ -64,6 +83,10 @@ test("beneficiary sees server payout status and labelled simulated channels", as
   const modes = channelModes(await client.integrationStatus(), config.payouts.provider);
   assert.equal(modes.sms.mode, "simulated");
   assert.equal(modes.payouts.mode, "simulated");
+
+  const sim = await client.simulateUssd("+254700000000", "");
+  assert.equal(sim.meta.simulated, true);
+  assert.match(sim.reply.response, /^CON FundBridge/);
 });
 
 test("an invalid session is reported through onSessionInvalid", async () => {
