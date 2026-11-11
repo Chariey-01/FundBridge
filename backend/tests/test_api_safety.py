@@ -37,3 +37,12 @@ def test_rejected_payout_releases_reservation(app, client):
     r=client.post(f"/api/v1/payouts/{payout_id}/review",headers={"Authorization":f"Bearer {auth}"},json={"decision":"reject"})
     assert r.status_code == 200 and r.json["data"]["status"] == "rejected"
     with app.app_context(): assert FinancialLedgerEntry.query.filter_by(payout_id=payout_id,entry_type="payout_released").count() == 1
+
+def test_unverified_beneficiary_cannot_request_payout(app, client):
+    with app.app_context():
+        user=User(email="beneficiary@test",role=Role.beneficiary); user.set_password("x"*12); db.session.add(user); db.session.flush()
+        beneficiary=BeneficiaryProfile(user_id=user.id,display_name="Beneficiary",phone_number="+254700000000",country_code="KE",verification_status="unverified",payout_destination_reference="token"); db.session.add(beneficiary); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id=beneficiary.id,title="Campaign title",slug="unverified-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published)
+        db.session.add(c); db.session.commit(); auth=token(app,user); campaign_id=c.id; beneficiary_id=beneficiary.id
+    r=client.post("/api/v1/payouts",headers={"Authorization":f"Bearer {auth}","Idempotency-Key":"unverified"},json={"campaign_id":campaign_id,"beneficiary_id":beneficiary_id,"amount":"1.00","currency":"USD"})
+    assert r.status_code == 400 and r.json["error"]["code"] == "BENEFICIARY_NOT_VERIFIED"

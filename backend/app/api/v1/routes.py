@@ -101,7 +101,12 @@ def submit_campaign(campaign_id):
 def assisted_beneficiary():
     data=body()
     if not data.get("display_name") or not data.get("phone_number") or not re.fullmatch(r"[A-Z]{2}",data.get("country_code","")): raise ValueError("VALIDATION_ERROR")
-    x=BeneficiaryProfile(display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
+    user_id=data.get("user_id")
+    if user_id:
+        linked_user=db.session.get(User,user_id)
+        if not linked_user or linked_user.status != "active" or linked_user.role != Role.beneficiary: raise ValueError("BENEFICIARY_ACCOUNT_NOT_ELIGIBLE")
+        if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
+    x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
     db.session.add(x); db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
 
 @api.post("/donations/orders")
@@ -158,6 +163,7 @@ def request_payout():
     campaign=Campaign.query.get(data.get("campaign_id")); beneficiary=BeneficiaryProfile.query.get(data.get("beneficiary_id"))
     if not campaign or not beneficiary or campaign.beneficiary_id != beneficiary.id: raise ValueError("VALIDATION_ERROR")
     if g.current_user.role == Role.beneficiary and beneficiary.user_id != g.current_user.id: raise PermissionError("FORBIDDEN")
+    if beneficiary.verification_status != "verified": raise ValueError("BENEFICIARY_NOT_VERIFIED")
     # row lock serializes reservations for this campaign on PostgreSQL.
     db.session.query(Campaign).filter_by(id=campaign.id).with_for_update().one()
     p=Payout(campaign_id=campaign.id,beneficiary_id=beneficiary.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),destination_type=data.get("destination_type","wallet"),destination_reference=beneficiary.payout_destination_reference or "",provider=current_app.config["PAYOUT_PROVIDER"],idempotency_key=key)
