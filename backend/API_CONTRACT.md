@@ -4,7 +4,13 @@ Base path: `/api/v1`. Responses use `{ "data": ..., "meta": {} }`; failures use 
 
 Authentication failures use HTTP 401 with `AUTH_REQUIRED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, or `INVALID_CREDENTIALS`; protected-resource authorization failures use HTTP 403. Login does not reveal whether an account exists.
 
-Implemented endpoints: `GET /health`, `GET /api/v1/public/config`, auth register/login/me, campaign browse/detail/create/update/submit/review/current-creator list, assisted beneficiary onboarding, beneficiary self-profile/update, donation order creation/server-side capture/reconciliation/detail/current-donor list, PayPal webhook, payout request/list/detail, and payout review.
+Implemented endpoints: `GET /health`, `GET /api/v1/public/config`, auth register/login/me, campaign browse/detail/create/update/submit/review/review-queue/current-creator list, assisted beneficiary onboarding, beneficiary self-profile/update, donation order creation/server-side capture/reconciliation/detail/current-donor list, PayPal webhook, payout request/list/detail, and payout review.
+
+Registration and sign-in are deliberately separate: `POST /auth/register` creates a donor account and returns `{id, role}` with HTTP 201, never an access token. Clients must then call `POST /auth/login` and present its `access_token` before accessing protected routes. Public campaign detail contains ledger-backed `raised` (`{amount,currency}`), but not `beneficiary_id`; the campaign creator, reviewers, and admins receive `beneficiary_id` for editing/review flows. `GET /campaigns/{id}/funds` remains the authoritative richer balance endpoint.
+
+`GET /campaigns/review-queue?page=1&page_size=20` is restricted to reviewer/admin accounts. It returns submitted, pending campaigns ordered oldest-first and pagination metadata `{page,page_size,total}`. `POST /campaigns` returns `409 SLUG_ALREADY_EXISTS` in the shared error envelope for a duplicate slug.
+
+`GET /beneficiaries/me/campaigns?page=1&page_size=20` is restricted to the authenticated `beneficiary` role. It returns only campaigns whose `beneficiary_id` belongs to that caller's own profile, newest-first (then descending ID), with `{page,page_size,total}` metadata. Items include public campaign fields, the caller's own `beneficiary_id`, `created_at`/`updated_at`, and ledger-backed `raised`; no beneficiary phone number, payout destination, or other profile data is exposed. A beneficiary with no profile or no campaigns receives an empty list. Review-queue items additionally contain `submitted_at`, the submission state-transition timestamp.
 
 `POST /campaigns/{id}/review` accepts `{ "decision": "approve" | "reject" }` for a reviewer/admin. A reviewer cannot review their own campaign. Approval publishes the campaign; rejection returns it to draft. Both decisions are audited.
 
@@ -29,3 +35,4 @@ PR #3 adds the following on top of this contract. Details are in `docs/integrati
 - Beneficiary verification by a reviewer or admin (`GET /beneficiaries`, `GET /beneficiaries/{id}`, `POST /beneficiaries/{id}/verification` with a `revision` that guards against stale reviews).
 - `GET /campaigns/{id}/funds` (ledger-backed balances) and `GET /campaigns?q=` (keyword search).
 - Uniform error envelopes for 405, 500 (`INTERNAL_ERROR` with `request_id`), provider failures (`502 PROVIDER_REQUEST_REJECTED`, `503 PROVIDER_UNAVAILABLE`) and rate limits (`429 RATE_LIMITED`). `X-Request-ID` is on every response.
+- The provider callbacks `POST /messaging/ussd` and `POST /messaging/sms/inbound` accept the gateway's form format and callback authentication only. The separate opt-in, rate-limited development simulator accepts JSON at `POST /messaging/simulator/ussd` and `POST /messaging/simulator/sms`; it is labelled simulated and cannot authenticate as a provider callback.
