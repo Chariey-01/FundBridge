@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 import sqlalchemy.exc
 
 from app.models.core import AuditLog, Campaign, User
@@ -54,9 +56,7 @@ def test_unhandled_database_error_log_omits_sql_parameters(client, seeded, monke
     assert "+254799887766" not in text and "private@example.test" not in text
 
 
-def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monkeypatch):
-    """C-4: the PayPal order was created before the donation had an id, so reference_id was None and
-    every later capture failed the reference_id == donation.id check (PAYMENT_ORDER_MISMATCH)."""
+def _order_through(client, seeded, monkeypatch, response_for):
     from flask import current_app
 
     from app.integrations.payments import paypal
@@ -65,11 +65,34 @@ def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monke
 
     def create_order(self, donation, return_url, cancel_url):
         sent["reference_id"] = donation.id
-        return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}]}
+        return response_for(donation)
 
     monkeypatch.setattr(paypal.PayPalSandboxAdapter, "create_order", create_order)
     current_app.config["PAYPAL_CLIENT_ID"] = "sandbox-client"
     res = client.post("/api/v1/donations/orders", headers={**auth(client, "creator@example.test"), "Idempotency-Key": "r1"},
                       json={"campaign_id": seeded["campaign"].id, "amount": "10.00", "currency": "USD"})
-    assert res.status_code == 201
+    return res, sent
+
+
+def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monkeypatch):
+    """C-4: the PayPal order was created before the donation had an id, so reference_id was None and every capture
+    failed the reference check. Fixed in feat/backend-core b7bf45b (flush before the provider call)."""
+    def representation(donation):  # what PayPal returns with "Prefer: return=representation"
+        return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}],
+                "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": "USD", "value": "10.00"}}]}
+
+    res, sent = _order_through(client, seeded, monkeypatch, representation)
+    assert res.status_code == 201, res.get_json()
     assert sent["reference_id"] and sent["reference_id"] == res.get_json()["data"]["id"]
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT C-4b: PayPal's create-order default (Prefer: return=minimal) returns only "
+                                       "id, status and links; b7bf45b requires purchase_units in that response and the "
+                                       "adapter does not request return=representation, so real orders fail with 400 "
+                                       "PAYMENT_ORDER_MISMATCH")
+def test_paypal_default_minimal_create_order_response_is_accepted(client, seeded, monkeypatch):
+    def minimal(donation):
+        return {"id": "ORDER-MIN-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}]}
+
+    res, _ = _order_through(client, seeded, monkeypatch, minimal)
+    assert res.status_code == 201, res.get_json()

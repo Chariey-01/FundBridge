@@ -86,6 +86,11 @@ class PayPalDouble(_Double):
         self.orders: dict[str, dict] = {}
         self.tokens: set[str] = set()
         self.capture_override: dict[str, dict] = {}  # order id -> fields to tamper in the capture response
+        # PayPal answers create-order with a minimal body (id, status, links) unless the request sends
+        # "Prefer: return=representation". True returns the full order regardless: an ACCOMMODATION for open
+        # defect C-4b (the canonical adapter does not send the header but validates purchase_units). Remove it
+        # when the adapter is fixed; test_order_creation_against_paypal_default_response then XPASSes.
+        self.assume_representation = False
 
     def _authorized(self, headers) -> bool:
         return headers.get("Authorization", "").removeprefix("Bearer ") in self.tokens
@@ -136,7 +141,10 @@ class PayPalDouble(_Double):
             order_id = uuid.uuid4().hex[:17].upper()
             with self.lock:
                 self.orders[order_id] = {"id": order_id, "status": "CREATED", "unit": unit}
-            return 201, {"id": order_id, "status": "CREATED", "links": [
+            full = self.assume_representation or "return=representation" in headers.get("Prefer", "")
+            extra = {"intent": "CAPTURE", "purchase_units": [{"reference_id": unit["reference_id"],
+                                                              "amount": dict(unit["amount"])}]} if full else {}
+            return 201, {"id": order_id, "status": "CREATED", **extra, "links": [
                 {"href": f"{self.url}/v2/checkout/orders/{order_id}", "rel": "self", "method": "GET"},
                 {"href": f"https://www.sandbox.paypal.com/checkoutnow?token={order_id}", "rel": "approve", "method": "GET"},
                 {"href": f"{self.url}/v2/checkout/orders/{order_id}/capture", "rel": "capture", "method": "POST"}]}
