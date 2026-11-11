@@ -2,7 +2,9 @@
 
 Base path: `/api/v1`. Responses use `{ "data": ..., "meta": {} }`; failures use the shared `{ "error": { "code", "message", "details" } }` envelope. Resource IDs are UUIDs and money is a decimal string plus uppercase ISO-4217 `currency`.
 
-Implemented endpoints: `GET /health`, `GET /api/v1/public/config`, auth register/login/me, campaign browse/detail/create/update/submit/current-creator list, assisted beneficiary onboarding, beneficiary self-profile/update, donation order creation/server-side capture/detail/current-donor list, PayPal webhook, payout request/list/detail, and payout review.
+Implemented endpoints: `GET /health`, `GET /api/v1/public/config`, auth register/login/me, campaign browse/detail/create/update/submit/review/current-creator list, assisted beneficiary onboarding, beneficiary self-profile/update, donation order creation/server-side capture/detail/current-donor list, PayPal webhook, payout request/list/detail, and payout review.
+
+`POST /campaigns/{id}/review` accepts `{ "decision": "approve" | "reject" }` for a reviewer/admin. A reviewer cannot review their own campaign. Approval publishes the campaign; rejection returns it to draft. Both decisions are audited.
 
 `POST /donations/orders` and `POST /payouts` require authenticated accounts and an `Idempotency-Key`. Guest donation is unavailable until an approved guest-ownership/capture contract exists. Payment completion occurs only after verified PayPal data confirms the stored order association, donation reference, capture status, amount, and currency. Payout simulator submission, when later enabled, must remain `submitted`/`pending_confirmation`; it must never claim `succeeded`.
 
