@@ -205,6 +205,25 @@ def capture_donation(donation_id):
     mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id); db.session.commit()
     return ok(serialize_donation(donation))
 
+@api.post("/donations/<donation_id>/reconcile")
+def reconcile_donation(donation_id):
+    """Reconcile an ambiguous provider result without issuing a second capture."""
+    donation=Donation.query.get_or_404(donation_id); u=current_user()
+    if donation.donor_id != u.id and u.role not in (Role.admin,Role.reviewer): raise PermissionError("FORBIDDEN")
+    if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
+    if donation.status != DonationStatus.pending or not donation.provider_order_id: raise ValueError("INVALID_DONATION_TRANSITION")
+    result=PayPalSandboxAdapter(current_app.config).get_order(donation.provider_order_id)
+    if result.get("status") == "COMPLETED":
+        unit=(result.get("purchase_units") or [{}])[0]
+        if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
+        captures=(unit.get("payments") or {}).get("captures") or []
+        if not captures: raise ValueError("PAYMENT_NOT_CONFIRMED")
+        mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
+        db.session.commit()
+    elif result.get("status") in ("VOIDED", "DENIED"):
+        donation.status=DonationStatus.failed; db.session.commit()
+    return ok(serialize_donation(donation))
+
 @api.get("/donations/<donation_id>")
 def donation_detail(donation_id):
     u=current_user(); donation=Donation.query.get_or_404(donation_id)

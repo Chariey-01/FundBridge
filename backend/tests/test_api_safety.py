@@ -54,3 +54,25 @@ def test_destination_change_requires_reverification(app, client):
         profile=BeneficiaryProfile(user_id=user.id,display_name="Verified",phone_number="+254700000001",country_code="KE",verification_status="verified",payout_destination_reference="old-token"); db.session.add(profile); db.session.commit(); auth=token(app,user)
     r=client.patch("/api/v1/beneficiaries/me",headers={"Authorization":f"Bearer {auth}"},json={"payout_destination_reference":"new-token"})
     assert r.status_code == 200 and r.json["data"]["verification_status"] == "reverification_required"
+
+def test_paypal_reconciliation_is_authoritative_and_idempotent(app, client):
+    with app.app_context():
+        user=User(email="reconcile@test",role=Role.donor); db.session.add(user); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="reconcile-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.flush()
+        d=Donation(campaign_id=c.id,donor_id=user.id,amount=Decimal("5.00"),currency="USD",provider="paypal",provider_order_id="order-reconcile",idempotency_key="reconcile",idempotency_fingerprint="fp",status=DonationStatus.pending); db.session.add(d); db.session.commit(); donation_id=d.id; auth=token(app,user)
+    completed={"status":"COMPLETED","purchase_units":[{"reference_id":donation_id,"payments":{"captures":[{"id":"capture-reconcile","status":"COMPLETED","amount":{"currency_code":"USD","value":"5.00"}}]}}]}
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.get_order", return_value=completed):
+        assert client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"}).status_code == 200
+        assert client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"}).status_code == 200
+    with app.app_context():
+        assert Donation.query.get(donation_id).status == DonationStatus.completed
+        assert FinancialLedgerEntry.query.filter_by(donation_id=donation_id).count() == 1
+
+def test_paypal_reconciliation_keeps_ambiguous_order_pending(app, client):
+    with app.app_context():
+        user=User(email="pending-reconcile@test",role=Role.donor); db.session.add(user); db.session.flush()
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Campaign title",slug="pending-reconcile",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.flush()
+        d=Donation(campaign_id=c.id,donor_id=user.id,amount=Decimal("5.00"),currency="USD",provider="paypal",provider_order_id="order-pending",idempotency_key="pending",idempotency_fingerprint="fp",status=DonationStatus.pending); db.session.add(d); db.session.commit(); donation_id=d.id; auth=token(app,user)
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.get_order", return_value={"status":"APPROVED"}):
+        response=client.post(f"/api/v1/donations/{donation_id}/reconcile",headers={"Authorization":f"Bearer {auth}"})
+    assert response.status_code == 200 and response.json["data"]["status"] == "pending"
