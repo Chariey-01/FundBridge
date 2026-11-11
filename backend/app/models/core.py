@@ -66,18 +66,23 @@ class Donation(Timestamped, db.Model):
     provider = db.Column(db.String(40), nullable=False); provider_order_id = db.Column(db.String(255), unique=True, nullable=True)
     provider_capture_id = db.Column(db.String(255), unique=True, nullable=True)
     status = db.Column(db.Enum(DonationStatus), nullable=False, default=DonationStatus.created)
-    idempotency_key = db.Column(db.String(255), nullable=False, unique=True)
+    idempotency_key = db.Column(db.String(255), nullable=False)
+    idempotency_fingerprint = db.Column(db.String(64), nullable=False, default="")
+    __table_args__ = (db.UniqueConstraint("donor_id", "idempotency_key", name="uq_donation_donor_idempotency"),)
 
 
 class Payout(Timestamped, db.Model):
     id = db.Column(db.String(36), primary_key=True, default=uuid_str)
     beneficiary_id = db.Column(db.String(36), db.ForeignKey("beneficiary_profile.id"), nullable=False, index=True)
+    requested_by = db.Column(db.String(36), db.ForeignKey("user.id"), nullable=True, index=True)
     campaign_id = db.Column(db.String(36), db.ForeignKey("campaign.id"), nullable=False, index=True)
     amount = db.Column(db.Numeric(18, 2), nullable=False); currency = db.Column(db.String(3), nullable=False)
     destination_type = db.Column(db.String(32), nullable=False); destination_reference = db.Column(db.String(512), nullable=False)
     provider = db.Column(db.String(40), nullable=False); provider_reference = db.Column(db.String(255), unique=True, nullable=True)
     status = db.Column(db.Enum(PayoutStatus), nullable=False, default=PayoutStatus.requested)
-    idempotency_key = db.Column(db.String(255), nullable=False, unique=True)
+    idempotency_key = db.Column(db.String(255), nullable=False)
+    idempotency_fingerprint = db.Column(db.String(64), nullable=False, default="")
+    __table_args__ = (db.UniqueConstraint("requested_by", "idempotency_key", name="uq_payout_requester_idempotency"),)
     submitted_at = db.Column(db.DateTime(timezone=True)); confirmed_at = db.Column(db.DateTime(timezone=True)); failure_reason_code = db.Column(db.String(80))
 
 

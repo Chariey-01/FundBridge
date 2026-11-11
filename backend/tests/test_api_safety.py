@@ -12,7 +12,7 @@ def test_donation_order_requires_valid_authentication(client):
     response=client.post("/api/v1/donations/orders", headers={"Idempotency-Key":"a"}, json={})
     assert response.status_code == 401
     response=client.post("/api/v1/donations/orders", headers={"Authorization":"Bearer invalid","Idempotency-Key":"a"}, json={})
-    assert response.status_code == 422
+    assert response.status_code == 401
 
 def test_webhook_is_idempotent_and_rejects_wrong_amount(app, client):
     with app.app_context():
