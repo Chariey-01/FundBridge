@@ -8,10 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
-from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, Role, User)
+from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User)
 from app.security.auth import current_user, roles_allowed
 from app.services.ledger import release_payout, reserve_payout
 from app.services.payments import mark_donation_completed
+from app.services.payouts import apply_provider_status
 
 api = Blueprint("api_v1", __name__)
 MONEY = Decimal("0.01")
@@ -101,21 +102,26 @@ def submit_campaign(campaign_id):
 def assisted_beneficiary():
     data=body()
     if not data.get("display_name") or not data.get("phone_number") or not re.fullmatch(r"[A-Z]{2}",data.get("country_code","")): raise ValueError("VALIDATION_ERROR")
-    x=BeneficiaryProfile(display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
+    user_id=data.get("user_id")
+    if user_id:
+        linked_user=db.session.get(User,user_id)
+        if not linked_user or linked_user.status != "active" or linked_user.role != Role.beneficiary: raise ValueError("BENEFICIARY_ACCOUNT_NOT_ELIGIBLE")
+        if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
+    x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
     db.session.add(x); db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
 
 @api.post("/donations/orders")
 def donation_order():
-    donor=None
-    try: donor=current_user()
-    except Exception: pass # guest donation, if enabled by business rules
+    # Guest payment requires a separately designed, non-enumerable ownership capability.
+    # It is unavailable until that contract is approved; invalid tokens must never fall back.
+    donor=current_user()
     data=body(); key=request.headers.get("Idempotency-Key")
     if not key: raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
     existing=Donation.query.filter_by(idempotency_key=key).first()
     if existing: return ok(serialize_donation(existing))
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
-    donation=Donation(campaign_id=campaign.id,donor_id=donor.id if donor else None,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,status=DonationStatus.pending)
+    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
     order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url","")); donation.provider_order_id=order["id"]
@@ -125,24 +131,52 @@ def donation_order():
 def paypal_webhook():
     payload=body(); adapter=PayPalSandboxAdapter(current_app.config)
     if not adapter.verify_webhook(request.headers,payload): raise PermissionError("INVALID_WEBHOOK_SIGNATURE")
+    event_id=payload.get("id")
+    if not event_id: raise ValueError("INVALID_WEBHOOK_EVENT")
+    if ProviderWebhookEvent.query.filter_by(provider="paypal",event_id=event_id).first(): return "",204
     if payload.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
         resource=payload.get("resource",{}); order_id=resource.get("supplementary_data",{}).get("related_ids",{}).get("order_id"); d=Donation.query.filter_by(provider_order_id=order_id).first()
-        if d: mark_donation_completed(d,resource["id"]); db.session.commit()
+        if not d: raise ValueError("PAYMENT_ORDER_MISMATCH")
+        mark_donation_completed(d, order_id=order_id, capture=resource)
+    db.session.add(ProviderWebhookEvent(provider="paypal",event_id=event_id,event_type=payload.get("event_type","unknown"),resource_id=payload.get("resource",{}).get("id"))); db.session.commit()
     return "",204
+
+@api.get("/beneficiaries/me")
+@roles_allowed(Role.beneficiary)
+def beneficiary_me():
+    x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
+    if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
+    return ok({"id":x.id,"display_name":x.display_name,"phone_number":x.phone_number,"preferred_language":x.preferred_language,"country_code":x.country_code,"verification_status":x.verification_status})
+
+@api.patch("/beneficiaries/me")
+@roles_allowed(Role.beneficiary)
+def update_beneficiary_me():
+    x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
+    if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
+    data=body()
+    for key in ("display_name","phone_number","preferred_language"):
+        if key in data and isinstance(data[key],str) and data[key].strip(): setattr(x,key,data[key].strip())
+    if "payout_destination_reference" in data and data["payout_destination_reference"] != x.payout_destination_reference:
+        if not isinstance(data["payout_destination_reference"],str) or not data["payout_destination_reference"]: raise ValueError("VALIDATION_ERROR")
+        x.payout_destination_reference=data["payout_destination_reference"]; x.verification_status="reverification_required"
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.payout_destination_changed",resource_type="beneficiary",resource_id=x.id))
+    db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status})
 
 @api.post("/donations/<donation_id>/capture")
 def capture_donation(donation_id):
     """Server-side capture; redirect/query parameters are never accepted as proof."""
     donation=Donation.query.get_or_404(donation_id)
     u=current_user()
-    if donation.donor_id and donation.donor_id != u.id and u.role not in (Role.admin,): raise PermissionError("FORBIDDEN")
+    if donation.donor_id != u.id and u.role not in (Role.admin,): raise PermissionError("FORBIDDEN")
     if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if donation.status != DonationStatus.pending or not donation.provider_order_id: raise ValueError("INVALID_DONATION_TRANSITION")
     result=PayPalSandboxAdapter(current_app.config).capture_order(donation.provider_order_id)
     if result.get("status") != "COMPLETED": raise ValueError("PAYMENT_NOT_CONFIRMED")
-    captures=result.get("purchase_units", [{}])[0].get("payments", {}).get("captures", [])
+    unit=result.get("purchase_units", [{}])[0]
+    if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
+    captures=unit.get("payments", {}).get("captures", [])
     if not captures or captures[0].get("status") != "COMPLETED": raise ValueError("PAYMENT_NOT_CONFIRMED")
-    mark_donation_completed(donation,captures[0]["id"],u.id); db.session.commit()
+    mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id); db.session.commit()
     return ok(serialize_donation(donation))
 
 @api.post("/payouts")
@@ -155,6 +189,7 @@ def request_payout():
     campaign=Campaign.query.get(data.get("campaign_id")); beneficiary=BeneficiaryProfile.query.get(data.get("beneficiary_id"))
     if not campaign or not beneficiary or campaign.beneficiary_id != beneficiary.id: raise ValueError("VALIDATION_ERROR")
     if g.current_user.role == Role.beneficiary and beneficiary.user_id != g.current_user.id: raise PermissionError("FORBIDDEN")
+    if beneficiary.verification_status != "verified": raise ValueError("BENEFICIARY_NOT_VERIFIED")
     # row lock serializes reservations for this campaign on PostgreSQL.
     db.session.query(Campaign).filter_by(id=campaign.id).with_for_update().one()
     p=Payout(campaign_id=campaign.id,beneficiary_id=beneficiary.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),destination_type=data.get("destination_type","wallet"),destination_reference=beneficiary.payout_destination_reference or "",provider=current_app.config["PAYOUT_PROVIDER"],idempotency_key=key)

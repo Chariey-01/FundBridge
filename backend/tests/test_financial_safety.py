@@ -8,7 +8,7 @@ def test_completed_donation_creates_credit(app):
     with app.app_context():
         c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="A valid campaign",slug="valid-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published)
         db.session.add(c); db.session.flush(); d=Donation(campaign_id=c.id,amount=Decimal("10.25"),currency="USD",provider="paypal",idempotency_key="one",status=DonationStatus.pending)
-        db.session.add(d); db.session.flush(); mark_donation_completed(d,"capture-one"); db.session.commit()
+        db.session.add(d); db.session.flush(); mark_donation_completed(d,order_id=None,capture={"id":"capture-one","status":"COMPLETED","amount":{"currency_code":"USD","value":"10.25"}}); db.session.commit()
         assert available_funds(c.id,"USD") == Decimal("10.25")
 
 def test_reservation_prevents_overcommit(app):
@@ -22,3 +22,13 @@ def test_reservation_prevents_overcommit(app):
         try: reserve_payout(p2)
         except ValueError as error: assert str(error) == "INSUFFICIENT_AVAILABLE_FUNDS"
         else: raise AssertionError("overcommit allowed")
+
+def test_capture_amount_or_currency_mismatch_cannot_credit(app):
+    with app.app_context():
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="A valid campaign",slug="mismatch-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published)
+        db.session.add(c); db.session.flush(); d=Donation(campaign_id=c.id,amount=Decimal("10"),currency="USD",provider="paypal",provider_order_id="order-1",idempotency_key="bad",status=DonationStatus.pending); db.session.add(d)
+        for capture in ({"id":"bad-amount","status":"COMPLETED","amount":{"currency_code":"USD","value":"9.99"}}, {"id":"bad-currency","status":"COMPLETED","amount":{"currency_code":"KES","value":"10.00"}}):
+            try: mark_donation_completed(d,order_id="order-1",capture=capture)
+            except ValueError: pass
+            else: raise AssertionError("invalid capture credited")
+        assert d.status == DonationStatus.pending
