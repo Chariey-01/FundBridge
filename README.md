@@ -20,6 +20,7 @@ PayPal is unconfigured until sandbox credentials are supplied. The payout adapte
 
 Added on `feat/ai-integration-qa`: AI drafting, translation, assistance and search behind a provider abstraction with deterministic fallbacks; USSD/SMS in English and Kiswahili with a labelled simulator; role assignment, beneficiary verification, ledger-backed balances and keyword search; sign-in rate limits, request IDs and uniform error envelopes; and a typed frontend client in `contracts/fundbridge-client.ts`.
 
+- Quick start, demo data and smoke test: [`docs/RUNBOOK.md`](docs/RUNBOOK.md) · demo script: [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) · release checklist: [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md)
 - Setup, providers, deployment and what is live versus simulated: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - Frontend guide and new endpoints: [`docs/integration/operations-and-frontend.md`](docs/integration/operations-and-frontend.md)
 - AI and SMS/USSD API: [`docs/integration/ai-messaging-api.md`](docs/integration/ai-messaging-api.md)

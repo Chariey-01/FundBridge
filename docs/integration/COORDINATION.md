@@ -1,8 +1,49 @@
 # Coordination notes: Claude (AI, feature phones, integration tests, deployment docs) → Codex (backend) and Cursor (frontend)
 
-Branch `feat/ai-integration-qa` (PR #3) is stacked on `feat/backend-core` (PR #2) and merges it regularly. PR #3 stays separate until the canonical backend is ready.
-Last merged backend commit: **`b45ee29`** (feat/backend-core). `main` contains the backend through `6fd76b3` plus this branch up to `0b12b4c` (PRs #4, #5, #6); **`main` does not yet contain `b45ee29`**, so it still has C-4b and X-1.
-This branch is byte-identical to `feat/backend-core` in every backend-owned file; only tests, docs and `contracts/` differ. Full evidence: `VERIFICATION_CHECKLIST.md`.
+
+## Current state (updated 2026-11-11)
+
+| Branch | Owner | Latest known / verified | Notes |
+|---|---|---|---|
+| `feat/backend-core` | Codex | **`b45ee29`**, verified by this branch's full suite | canonical backend |
+| `feat/frontend-core` | Cursor | **not published** (Cursor reported `0633e6e` locally) | nothing could be verified |
+| `feat/ai-integration-qa` | AI, messaging, integration, demo infrastructure | see `git log`; PR **#7** (→ `feat/backend-core`) is open | byte-identical to `feat/backend-core` in every backend-owned file |
+| `main` | maintainer | `6f3c335` | **lacks `b45ee29`**: deploy from `feat/backend-core` until it is merged |
+
+### Integration blockers, by severity
+1. `main` lacks `b45ee29`, so it cannot create real PayPal orders (C-4b) and writes duplicate onboarding audit rows (X-1). Owner: maintainer, merging `feat/backend-core` → `main`.
+2. The frontend is unpublished: no browser walkthrough (`FRONTEND_WALKTHROUGH.md`). Owner: Cursor.
+3. **G-6** (beneficiary campaign list) and **G-7** (reviewer queue) are missing, which blocks the web beneficiary payout and reviewer screens. Proposed contracts are in `tests/integration/test_proposed_contract_gaps.py`. Owner: Codex. Demo workaround: the campaign IDs the seed prints.
+4. **R-2** and **S-5**: HTTP 500 on concurrent reconcile or same-key orders (money safe). Owner: Codex.
+5. **X-2**, **M-1b**, **M-2**. Owner: Codex.
+6. Credentials: PayPal sandbox, OpenAI key, Africa's Talking account, shortcode and USSD code, payout provider. Owner: project owner.
+
+### Work completed on this branch (most recent first)
+- **Demo infrastructure:**
+  - `fundbridge-demo seed --scenarios`: labelled demo donations and payouts created through the core services;
+  - `scripts/smoke_test.py`;
+  - a validated `.env.example`;
+  - `docs/RUNBOOK.md`, `docs/DEMO_SCRIPT.md`, `docs/RELEASE_CHECKLIST.md`, `FRONTEND_WALKTHROUGH.md`.
+- **Executable proposed contracts** for G-6 and G-7.
+- **Independent verification of `b45ee29`:** C-4b and X-1 fixed; R-2, S-5 and X-2 found or kept, with reproductions.
+- **Frontend contracts:** reconcile-aware PayPal return with a `failed` outcome, a consumption guide and type-checked examples.
+
+Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, Cursor or the owner (blockers above).
+
+### Test runs
+| When | Backend commit | Branch commit | Suite | Result |
+|---|---|---|---|---|
+| 2026-11-11 | `b45ee29` | `dbaa6e1` plus the docs and contract-gap tests in the next commit | `pytest tests`, PostgreSQL 16.15 (integration and e2e), gunicorn | **275 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 8 xfailed (R-2, S-5, X-2, M-2, M-1b ×2, G-6, G-7) |
+| 2026-11-11 | `b45ee29` | same | `contracts`: `npm test` | tsc --strict ✅, 11/11 |
+| 2026-11-11 | `b45ee29` | same | e2e `test_demo_smoke`: seed CLI, then `scripts/smoke_test.py` against gunicorn | 23 PASS, 0 SKIP (PayPal and OpenAI were local doubles) |
+
+### External services: simulated versus connected
+| Service | State | Evidence available |
+|---|---|---|
+| PayPal | **Not connected.** Sandbox adapter, tested only against a local Orders v2 double | real sandbox needs credentials (`EXTERNAL_CHECKLIST.md`) |
+| OpenAI | **Not connected.** Tested against mocks and a local double | `flask fundbridge-ai check` once a key exists |
+| Africa's Talking (SMS/USSD) | **Not connected.** Simulator plus a local API double | account, shortcode and USSD code needed |
+| Mobile-money payouts | **Simulated**; stops at `approved_for_submission` | no provider chosen |
 
 ## For Codex (canonical backend)
 
@@ -37,6 +78,10 @@ This branch is byte-identical to `feat/backend-core` in every backend-owned file
 `list_campaigns()` applies both the escaped title/description filter and the ported title/description/category filter. Delete one, keep the escaping and the 100-character cap (`test_keyword_search_without_ai`), and keep category matching if wanted (`test_keyword_search_matches_category_as_ported`).
 
 ### API gaps found while reviewing the frontend contract (not defects, missing capabilities)
+Proposed contracts, executable as strict xfails in `tests/integration/test_proposed_contract_gaps.py` (they XPASS when implemented in this shape; adjust them together with `contracts/` if you choose another shape):
+- `GET /api/v1/beneficiaries/me/campaigns` (beneficiary only; 403 for other roles) returns the caller's campaigns in every status, serialized like `GET /campaigns`.
+- `GET /api/v1/campaigns?status=submitted` for reviewers and admins is the review queue. Other callers asking for a non-published status get 401/403. The public listing stays published-only.
+
 - **G-6:** a beneficiary cannot list the campaigns they benefit from. `serialize_campaign` has no `beneficiary_id`, and `/me/campaigns` returns campaigns the user *created*. The web payout-request screen therefore cannot find a `campaign_id`. Suggestion: `GET /beneficiaries/me/campaigns`, or `beneficiary_id` in the campaign payload.
 - **G-7:** there is no reviewer queue; `GET /campaigns` lists only published campaigns. Suggestion: `GET /campaigns?status=submitted` for reviewers and admins.
 - **G-8:** no lookup by `slug`, no pagination beyond 50 results, and no timestamps (`created_at`, `published_at`) in campaign, donation and payout payloads.
@@ -53,6 +98,7 @@ The head is `c3f1a9e7d2b4`. Chain new migrations after it; `test_single_alembic_
 
 - `fundbridge-client.ts`: typed client with `completePayPalReturn` (capture, then reconcile the same donation id if ambiguous, then re-read; outcomes `confirmed`, `failed`, `not_approved`, `provider_unavailable`, `needs_review`, `pending`), `presentDonation`/`presentPayout`, `channelModes`, AI, staff and simulator calls. Verified against the live API.
 - `examples.ts`: type-checked patterns for async states, the PayPal return page, payout rows, AI suggestions that never block the form, keyword-first search, channel banners, the labelled simulator and stale-review handling.
+- **Please run the browser walkthrough** in `docs/integration/FRONTEND_WALKTHROUGH.md` (donor, creator, reviewer and beneficiary on the seeded demo data) and record the results there or in your PR.
 - Docs: `docs/integration/operations-and-frontend.md` (screen map, the loading/pending/failure/success table, error codes), `ai-messaging-api.md`, `openai.md`, `africastalking.md`.
 
 Non-negotiable: donation success only from the server (`completed`); payout success only for `succeeded`, and no live payout provider exists, so approved is never shown as paid; label simulated channels; AI failures never block non-AI paths.
