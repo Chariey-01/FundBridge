@@ -1,7 +1,7 @@
 """Concurrent payout requests must not reserve more than the available funds.
 
 Needs a real database server, because the core backend relies on ``SELECT ... FOR UPDATE``:
-    FUNDBRIDGE_TEST_DATABASE_URL=postgresql+psycopg://user@127.0.0.1:5432/fundbridge_test pytest tests/integration
+    POSTGRES_TEST_DATABASE_URL=postgresql+psycopg://user@127.0.0.1:5432/fundbridge_test pytest tests/integration
 Skipped when the variable is not set. Set FUNDBRIDGE_TEST_SQLITE_RACE=1 to run the same
 scenario against a SQLite file and observe whether SQLite serialises reservations.
 """
@@ -22,7 +22,7 @@ from app.services.ledger import available_funds
 from .conftest import BASE_CONFIG, PASSWORD
 from .test_financial_security import fund
 
-PG_URL = os.environ.get("FUNDBRIDGE_TEST_DATABASE_URL")
+PG_URL = os.environ.get("POSTGRES_TEST_DATABASE_URL") or os.environ.get("FUNDBRIDGE_TEST_DATABASE_URL")
 WORKERS = 8
 
 
@@ -81,7 +81,7 @@ def _run_race(database_url: str) -> tuple[list[int], Decimal, int]:
     return statuses, remaining, count
 
 
-@pytest.mark.skipif(not PG_URL, reason="set FUNDBRIDGE_TEST_DATABASE_URL to a PostgreSQL database")
+@pytest.mark.skipif(not PG_URL, reason="set POSTGRES_TEST_DATABASE_URL to an isolated PostgreSQL test database")
 def test_concurrent_payouts_cannot_overspend_postgres():
     statuses, remaining, count = _run_race(PG_URL)
     assert statuses.count(201) == 1, statuses

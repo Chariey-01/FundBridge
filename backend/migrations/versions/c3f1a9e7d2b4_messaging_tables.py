@@ -1,7 +1,7 @@
 """messaging tables: PIN credentials, phone preferences, support requests
 
 Revision ID: c3f1a9e7d2b4
-Revises: a0d4581f14e2
+Revises: 18323330d500
 Create Date: 2026-11-11 12:00:00
 
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "c3f1a9e7d2b4"
-down_revision = "a0d4581f14e2"
+down_revision = "18323330d500"
 branch_labels = None
 depends_on = None
 

@@ -112,9 +112,24 @@ def seeded(app):
     return {"beneficiary": beneficiary, "campaign": campaign, "beneficiary_user": beneficiary_user}
 
 
-def add_pending_donation(campaign, amount: str, key: str) -> Donation:
-    donation = Donation(campaign_id=campaign.id, amount=Decimal(amount), currency="USD", provider="paypal",
-                        idempotency_key=key, status=DonationStatus.pending, provider_order_id=f"order-{key}")
+def add_pending_donation(campaign, amount: str, key: str, donor_id: str | None = None) -> Donation:
+    donation = Donation(campaign_id=campaign.id, donor_id=donor_id, amount=Decimal(amount), currency="USD",
+                        provider="paypal", idempotency_key=key, status=DonationStatus.pending,
+                        provider_order_id=f"order-{key}")
     db.session.add(donation)
     db.session.commit()
     return donation
+
+
+def provider_capture(donation: Donation, capture_id: str, *, value: str | None = None) -> dict:
+    """A PayPal-shaped capture object as returned by the verified provider path."""
+    return {"id": capture_id, "status": "COMPLETED",
+            "amount": {"currency_code": donation.currency, "value": value or str(donation.amount)}}
+
+
+def complete(donation: Donation, capture_id: str) -> Donation:
+    """Complete a donation through the core service exactly as a verified capture would."""
+    from app.services.payments import mark_donation_completed
+
+    return mark_donation_completed(donation, order_id=donation.provider_order_id,
+                                   capture=provider_capture(donation, capture_id))

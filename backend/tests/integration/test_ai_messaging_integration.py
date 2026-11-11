@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from app.extensions import db
-from app.services.payments import mark_donation_completed
 
-from .conftest import BENEFICIARY_PHONE, CALLBACK_TOKEN, add_pending_donation, auth
+from .conftest import BENEFICIARY_PHONE, CALLBACK_TOKEN, add_pending_donation, auth, complete
 
 
 def outbox(client, phone=BENEFICIARY_PHONE):
@@ -53,7 +52,7 @@ def test_ai_draft_does_not_create_or_change_campaigns(client, seeded):
 
 def test_ai_search_reads_ledger_totals(client, seeded):
     donation = add_pending_donation(seeded["campaign"], "25.50", "d1")
-    mark_donation_completed(donation, "capture-1")
+    complete(donation, "capture-1")
     db.session.commit()
     res = client.post("/api/v1/ai/campaign-search", json={"query": "school fees in Kenya"})
     results = res.get_json()["data"]["results"]
@@ -105,7 +104,7 @@ def test_ussd_campaign_status_from_ledger(client, seeded):
     res = ussd(client, "")
     assert res.get_data(as_text=True).startswith("CON FundBridge")
     donation = add_pending_donation(seeded["campaign"], "40.00", "d2")
-    mark_donation_completed(donation, "capture-2")
+    complete(donation, "capture-2")
     db.session.commit()
     text = ussd(client, "1").get_data(as_text=True)
     assert text.startswith("END ") and "Raised: USD 40.00 of USD 400.00" in text
@@ -119,7 +118,7 @@ def test_pending_donation_is_not_counted(client, seeded):
 def test_ussd_payout_status_behind_pin(client, seeded):
     beneficiary_headers = auth(client, "beneficiary@example.test")
     donation = add_pending_donation(seeded["campaign"], "100.00", "d4")
-    mark_donation_completed(donation, "capture-4")
+    complete(donation, "capture-4")
     db.session.commit()
     res = client.post(
         "/api/v1/payouts",
@@ -160,11 +159,11 @@ def test_simulator_endpoints_are_labelled(client, seeded):
 def test_sms_sent_only_after_committed_completion(client, seeded):
     donation = add_pending_donation(seeded["campaign"], "15.00", "d5")
     assert outbox(client) == []
-    mark_donation_completed(donation, "capture-5")
+    complete(donation, "capture-5")
     db.session.rollback()  # never committed: no message
     assert outbox(client) == []
     donation = db.session.get(type(donation), donation.id)
-    mark_donation_completed(donation, "capture-5b")
+    complete(donation, "capture-5b")
     db.session.commit()
     messages = outbox(client)
     assert len(messages) == 1
@@ -174,7 +173,7 @@ def test_sms_sent_only_after_committed_completion(client, seeded):
 
 def test_payout_review_triggers_status_sms(client, seeded):
     donation = add_pending_donation(seeded["campaign"], "100.00", "d6")
-    mark_donation_completed(donation, "capture-6")
+    complete(donation, "capture-6")
     db.session.commit()
     res = client.post(
         "/api/v1/payouts",

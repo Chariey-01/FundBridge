@@ -22,14 +22,13 @@ from app.models.core import (
     Role,
 )
 from app.services.ledger import available_funds
-from app.services.payments import mark_donation_completed
 
-from .conftest import add_pending_donation, auth, make_user
+from .conftest import add_pending_donation, auth, complete, make_user, provider_capture
 
 
 def fund(campaign, amount: str, key: str):
     donation = add_pending_donation(campaign, amount, key)
-    mark_donation_completed(donation, f"capture-{key}")
+    complete(donation, f"capture-{key}")
     db.session.commit()
     return donation
 
@@ -60,14 +59,34 @@ def test_unsigned_paypal_webhook_cannot_complete_donation(client, seeded):
 
 def test_duplicate_completion_credits_ledger_once(client, seeded):
     donation = fund(seeded["campaign"], "20.00", "dup")
-    mark_donation_completed(donation, "capture-dup")
-    mark_donation_completed(donation, "capture-other")
-    db.session.commit()
+    complete(donation, "capture-dup")  # replay of the same capture is a no-op
+    with pytest.raises(ValueError, match="PAYMENT_CAPTURE_MISMATCH"):
+        complete(donation, "capture-other")
+    db.session.rollback()
     assert available_funds(seeded["campaign"].id, "USD") == Decimal("20.00")
 
 
+def test_completion_rejects_wrong_amount_or_currency(client, seeded):
+    from app.services.payments import mark_donation_completed
+
+    donation = add_pending_donation(seeded["campaign"], "20.00", "wrong")
+    for capture, code in [
+        (provider_capture(donation, "c1", value="2.00"), "PAYMENT_AMOUNT_MISMATCH"),
+        ({**provider_capture(donation, "c2"), "amount": {"currency_code": "EUR", "value": "20.00"}},
+         "PAYMENT_CURRENCY_MISMATCH"),
+        ({**provider_capture(donation, "c3"), "status": "PENDING"}, "PAYMENT_NOT_CONFIRMED"),
+    ]:
+        with pytest.raises(ValueError, match=code):
+            mark_donation_completed(donation, order_id=donation.provider_order_id, capture=capture)
+    with pytest.raises(ValueError, match="PAYMENT_ORDER_MISMATCH"):
+        mark_donation_completed(donation, order_id="someone-elses-order", capture=provider_capture(donation, "c4"))
+    db.session.rollback()
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("0")
+
+
 def test_capture_requires_provider_confirmation(client, seeded, monkeypatch):
-    donation = add_pending_donation(seeded["campaign"], "30.00", "cap")
+    creator_id = seeded["campaign"].creator_id
+    donation = add_pending_donation(seeded["campaign"], "30.00", "cap", donor_id=creator_id)
     from app.integrations.payments import paypal
 
     monkeypatch.setattr(paypal.PayPalSandboxAdapter, "capture_order", lambda self, order_id: {"status": "PENDING"})
@@ -86,17 +105,24 @@ def test_client_cannot_set_donation_status(client, seeded):
     assert db.session.get(Donation, donation.id).status == DonationStatus.pending
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT C-1: capture does not compare the captured amount/currency with the "
-                                       "donation; the ledger credits the requested amount, not what PayPal captured")
 def test_capture_amount_must_match_donation(client, seeded, monkeypatch):
-    donation = add_pending_donation(seeded["campaign"], "30.00", "amt")
+    # Was DEFECT C-1; fixed in feat/backend-core a1d4833.
+    donation = add_pending_donation(seeded["campaign"], "30.00", "amt", donor_id=seeded["campaign"].creator_id)
     from app.integrations.payments import paypal
 
-    captured = {"status": "COMPLETED", "purchase_units": [{"payments": {"captures": [
+    captured = {"status": "COMPLETED", "purchase_units": [{"reference_id": donation.id, "payments": {"captures": [
         {"id": "cap-amt", "status": "COMPLETED", "amount": {"currency_code": "USD", "value": "1.00"}}]}}]}
     monkeypatch.setattr(paypal.PayPalSandboxAdapter, "capture_order", lambda self, order_id: captured)
-    client.post(f"/api/v1/donations/{donation.id}/capture", headers=auth(client, "creator@example.test"))
-    assert available_funds(seeded["campaign"].id, "USD") in (Decimal("0"), Decimal("1.00"))
+    res = client.post(f"/api/v1/donations/{donation.id}/capture", headers=auth(client, "creator@example.test"))
+    assert res.status_code == 400 and res.get_json()["error"]["code"] == "PAYMENT_AMOUNT_MISMATCH"
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("0")
+
+
+def test_capture_of_someone_elses_donation_forbidden(client, seeded):
+    donation = add_pending_donation(seeded["campaign"], "30.00", "own", donor_id=seeded["campaign"].creator_id)
+    make_user("donor2@example.test", Role.donor)
+    res = client.post(f"/api/v1/donations/{donation.id}/capture", headers=auth(client, "donor2@example.test"))
+    assert res.status_code == 403
 
 
 # -------------------------------------------------------------------- payouts
@@ -190,14 +216,14 @@ def test_requester_cannot_approve_own_payout(client, seeded):
     assert res.status_code == 403
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT F-1: payouts are accepted for beneficiaries whose verification_status "
-                                       "is not 'verified', to a destination entered at assisted onboarding")
 def test_unverified_beneficiary_cannot_request_payout(client, seeded):
+    # Was DEFECT F-1; fixed in feat/backend-core b6a9d1f.
     beneficiary: BeneficiaryProfile = seeded["beneficiary"]
     beneficiary.verification_status = "unverified"
     db.session.commit()
     fund(seeded["campaign"], "100.00", "f10")
-    assert request_payout(client, seeded, "10.00", "unverified").status_code in (400, 403)
+    res = request_payout(client, seeded, "10.00", "unverified")
+    assert res.status_code == 400 and res.get_json()["error"]["code"] == "BENEFICIARY_NOT_VERIFIED"
 
 
 # ----------------------------------------------------------- contract envelope
@@ -222,3 +248,24 @@ def test_errors_do_not_leak_internals(client, seeded):
                                                                     "Idempotency-Key": "x"})
     body = res.get_data(as_text=True)
     assert res.status_code == 400 and "Traceback" not in body and "sqlalchemy" not in body.lower()
+
+
+# ------------------------------------------------------------ phone channel identity
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT P-1: PATCH /beneficiaries/me changes phone_number without any "
+                                       "re-verification; that number controls SMS/USSD access and notifications")
+def test_phone_change_requires_reverification(client, seeded):
+    res = client.patch("/api/v1/beneficiaries/me", json={"phone_number": "+254799999999"},
+                       headers=auth(client, "beneficiary@example.test"))
+    profile = db.session.get(BeneficiaryProfile, seeded["beneficiary"].id)
+    assert res.status_code in (400, 403) or profile.verification_status != "verified"
+
+
+def test_destination_change_requires_reverification(client, seeded):
+    res = client.patch("/api/v1/beneficiaries/me", json={"payout_destination_reference": "tok_new"},
+                       headers=auth(client, "beneficiary@example.test"))
+    assert res.get_json()["data"]["verification_status"] == "reverification_required"
+    fund(seeded["campaign"], "100.00", "after-change")
+    assert request_payout(client, seeded, "10.00", "after-change").get_json()["error"]["code"] == \
+        "BENEFICIARY_NOT_VERIFIED"
