@@ -53,7 +53,7 @@ def make_app():
         return app
 
     yield factory
-    for ctx in apps:
+    for ctx in reversed(apps):  # contexts are a stack: pop the most recent first
         db.session.remove()
         db.drop_all()
         ctx.pop()

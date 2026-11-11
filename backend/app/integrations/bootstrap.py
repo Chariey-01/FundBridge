@@ -54,6 +54,7 @@ def init_integrations(flask_app: Flask) -> None:
 
     from .admin_cli import register_admin_cli
     from .ai_cli import register_ai_cli
+    from .messaging_cli import register_messaging_cli
     from .demo import register_demo_cli
     from .hardening import init_hardening
 
@@ -62,6 +63,7 @@ def init_integrations(flask_app: Flask) -> None:
     register_demo_cli(flask_app)
     register_admin_cli(flask_app)
     register_ai_cli(flask_app)
+    register_messaging_cli(flask_app)
 
     @flask_app.get("/api/v1/integrations/status")
     def integrations_status():

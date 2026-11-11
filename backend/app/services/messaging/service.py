@@ -11,20 +11,25 @@ approve or redirect a payout.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
+import secrets
 from dataclasses import dataclass
 from typing import Callable
 
 from app.services.ai.fallback import fallback_search_filters
 from app.services.ai.ports import CampaignCatalog, Money, SearchFilters
 
+from .text import USSD_MAX, fit, gsm7_length, shorten, to_gsm7
 from .i18n import campaign_status_label, payout_status_label, phone_language, t
 from .phone import normalize_msisdn
 from .pins import PinService
 from .ports import BeneficiaryDirectory, BeneficiaryRecord, CampaignStatusView, MessagingStore
 
 log = logging.getLogger("fundbridge.messaging")
+_PROCESS_SECRET = secrets.token_hex(16)  # used only when no app secret is configured
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,8 @@ class MessagingSettings:
     public_base_url: str = "http://localhost:3000"
     ussd_code: str = "*384*123#"
     default_country: str = "KE"
+    # Keys the HMAC that identifies a USSD step for retry detection (the step text contains the PIN).
+    dedup_secret: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,7 +47,8 @@ class UssdReply:
     end: bool
 
     def render(self) -> str:
-        return ("END " if self.end else "CON ") + self.text
+        # Every screen is GSM 7-bit and at most 182 characters, whatever titles or URLs it contains.
+        return ("END " if self.end else "CON ") + fit(self.text, USSD_MAX)
 
 
 def fmt_money(money: Money) -> str:
@@ -48,7 +56,15 @@ def fmt_money(money: Money) -> str:
 
 
 def _short(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+    return shorten(text, limit)
+
+
+def _fit_menu(header: str, items: list[str], *, number_fmt: str = "{i}. ", limit: int = USSD_MAX) -> str:
+    """A numbered menu whose item titles are shortened just enough to fit one screen."""
+    overhead = gsm7_length(to_gsm7(header)) + sum(len(number_fmt.format(i=i)) + 1 for i in range(1, len(items) + 1))
+    width = max(8, (limit - overhead) // max(1, len(items)))
+    lines = [number_fmt.format(i=i) + shorten(item, width) for i, item in enumerate(items, 1)]
+    return header + "\n" + "\n".join(lines)
 
 
 def parse_steps(text: str | None) -> list[str]:
@@ -100,6 +116,18 @@ class MessagingService:
             return phone_language(pref.language)
         return phone_language(beneficiary.preferred_language if beneficiary else None)
 
+    def _search_screen(self, lang: str, results) -> str:
+        """Up to three results with the donate link; fewer results or shorter titles when the screen is full."""
+        url = self._url("/campaigns")
+        for count in range(min(3, len(results)), 0, -1):
+            for width in (34, 28, 22, 18):
+                lines = "\n".join(f"{i}) {shorten(c.title, width)}: {fmt_money(c.raised)}"
+                                   for i, c in enumerate(results[:count], 1))
+                screen = t(lang, "search_results", lines=lines, url=url)
+                if gsm7_length(to_gsm7(screen)) <= USSD_MAX:
+                    return screen
+        return screen  # render() still caps it
+
     def _campaign_line(self, lang: str, c: CampaignStatusView, *, limit: int = 40) -> str:
         return t(lang, "campaign_status", title=_short(c.title, limit), status=campaign_status_label(lang, c.status),
                  raised=fmt_money(c.raised), goal=fmt_money(c.goal))
@@ -120,13 +148,17 @@ class MessagingService:
         msisdn = normalize_msisdn(phone_number, self.settings.default_country)
         if msisdn is None:
             return UssdReply(t("en", "unavailable"), True)
+        step_key = None
+        if session_id:
+            secret = (self.settings.dedup_secret or _PROCESS_SECRET).encode()
+            step_key = hmac.new(secret, f"{session_id}\x1f{text or ''}".encode(), hashlib.sha256).hexdigest()[:40]
         try:
-            return self._ussd(msisdn, parse_steps(text))
+            return self._ussd(msisdn, parse_steps(text), step_key)
         except Exception:  # never leak internals to a handset; log and end the session
             log.exception("USSD flow failed (session %s)", session_id)
             return UssdReply(t("en", "unavailable"), True)
 
-    def _ussd(self, msisdn: str, steps: list[str]) -> UssdReply:
+    def _ussd(self, msisdn: str, steps: list[str], step_key: str | None = None) -> UssdReply:
         beneficiary = self.directory.find_by_phone(msisdn)
         lang = self._language(msisdn, beneficiary)
         if not steps:
@@ -135,7 +167,7 @@ class MessagingService:
         if choice == "1":
             return self._ussd_campaigns(lang, beneficiary, rest)
         if choice == "2":
-            return self._ussd_payout(lang, beneficiary, rest)
+            return self._ussd_payout(lang, beneficiary, rest, step_key)
         if choice == "3":
             if not rest:
                 return UssdReply(t(lang, "search_prompt"), False)
@@ -143,8 +175,7 @@ class MessagingService:
             results = self._search(query)
             if not results:
                 return UssdReply(t(lang, "search_none", query=query), True)
-            lines = "\n".join(f"{i}) {_short(c.title, 34)}: {fmt_money(c.raised)}" for i, c in enumerate(results, 1))
-            return UssdReply(t(lang, "search_results", lines=lines, url=self._url("/campaigns")), True)
+            return UssdReply(self._search_screen(lang, results), True)
         if choice == "4":
             return UssdReply(t(lang, "donate_info", url=self._url()), True)
         if choice == "5":
@@ -179,13 +210,13 @@ class MessagingService:
         if len(campaigns) == 1:
             return UssdReply(self._campaign_line(lang, campaigns[0]), True)
         if not rest:
-            lines = "\n".join(f"{i}. {_short(c.title, 30)}" for i, c in enumerate(campaigns, 1))
-            return UssdReply(f"{t(lang, 'choose_campaign')}\n{lines}", False)
+            return UssdReply(_fit_menu(t(lang, "choose_campaign"), [c.title for c in campaigns]), False)
         if rest[0].isdigit() and 1 <= int(rest[0]) <= len(campaigns):
             return UssdReply(self._campaign_line(lang, campaigns[int(rest[0]) - 1]), True)
         return UssdReply(t(lang, "invalid"), True)
 
-    def _ussd_payout(self, lang: str, beneficiary: BeneficiaryRecord | None, rest: list[str]) -> UssdReply:
+    def _ussd_payout(self, lang: str, beneficiary: BeneficiaryRecord | None, rest: list[str],
+                     step_key: str | None = None) -> UssdReply:
         if beneficiary is None:
             return UssdReply(t(lang, "not_linked"), True)
         if not self._verified(beneficiary):
@@ -193,7 +224,9 @@ class MessagingService:
         if self.pins.has_pin(beneficiary.id):
             if not rest:
                 return UssdReply(t(lang, "pin_enter"), False)
-            check = self.pins.verify(beneficiary.id, rest[0])
+            # A gateway retry of the same step must not count as a second wrong attempt.
+            fresh = step_key is None or self.store.first_delivery("ussd-pin", step_key)
+            check = self.pins.verify(beneficiary.id, rest[0], count_failure=fresh)
             if check.outcome == "locked":
                 return UssdReply(t(lang, "pin_locked", minutes=check.minutes_locked), True)
             if check.outcome != "ok":
@@ -240,10 +273,17 @@ class MessagingService:
 
     # ---------------------------------------------------------------------- SMS
 
-    def handle_inbound_sms(self, *, phone_number: str, text: str | None) -> list[str]:
-        """Process an inbound SMS and send the replies. Returns the reply texts."""
+    def handle_inbound_sms(self, *, phone_number: str, text: str | None, message_id: str | None = None) -> list[str]:
+        """Process an inbound SMS and send the replies. Returns the reply texts.
+
+        ``message_id`` is the gateway's id; a retried delivery of the same message is ignored, so a person never
+        gets duplicate replies or duplicate support requests.
+        """
         msisdn = normalize_msisdn(phone_number, self.settings.default_country)
         if msisdn is None:
+            return []
+        if message_id and not self.store.first_delivery("sms", str(message_id)[:200]):
+            log.info("Duplicate inbound SMS %s ignored", str(message_id)[:40])
             return []
         try:
             replies = self._sms(msisdn, (text or "").strip()[:480])

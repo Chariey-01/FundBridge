@@ -11,7 +11,10 @@ import secrets
 from decimal import Decimal
 from typing import Sequence
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.core import (
@@ -20,6 +23,7 @@ from app.models.core import (
     CampaignStatus,
     FinancialLedgerEntry,
     Payout,
+    ProviderWebhookEvent,
     User,
 )
 from app.models.messaging import MessagingPinCredential, MessagingPreference, SupportRequest
@@ -34,6 +38,8 @@ from app.services.messaging.ports import (
 )
 
 log = logging.getLogger("fundbridge.integrations")
+
+GATEWAY_EVENT_PROVIDER = "africastalking"
 
 # Ledger entry types that count towards "raised". Refund/reversal types are subtracted
 # once the core ledger defines them (see docs/integration/ai-messaging.md, open items).
@@ -177,7 +183,9 @@ class SqlBeneficiaryDirectory:
 
 class SqlMessagingStore:
     def get_pin(self, beneficiary_id: str) -> PinRecord | None:
-        row = db.session.get(MessagingPinCredential, beneficiary_id)
+        # Row lock (PostgreSQL) so concurrent wrong PINs cannot lose failed-attempt updates and get extra guesses.
+        row = (db.session.query(MessagingPinCredential).filter_by(beneficiary_id=beneficiary_id)
+               .with_for_update().one_or_none())
         return PinRecord(row.pin_hash, row.failed_attempts, row.locked_until) if row else None
 
     def save_pin(self, beneficiary_id: str, record: PinRecord) -> None:
@@ -196,6 +204,17 @@ class SqlMessagingStore:
             db.session.delete(row)
             db.session.commit()
 
+    def first_delivery(self, channel: str, key: str) -> bool:
+        """Uses the core provider-event dedup table (unique provider + event_id); no payload is stored."""
+        db.session.add(ProviderWebhookEvent(provider=GATEWAY_EVENT_PROVIDER, event_id=f"{channel}:{key}"[:255],
+                                            event_type=f"{channel}.inbound"))
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return False
+        return True
+
     def get_preference(self, msisdn: str) -> Preference:
         row = db.session.get(MessagingPreference, msisdn)
         return Preference(row.language, row.opted_out) if row else Preference()
@@ -210,6 +229,12 @@ class SqlMessagingStore:
         db.session.commit()
 
     def open_support_request(self, *, msisdn, beneficiary_id, channel, topic, priority) -> str:
+        # A repeated dial or a gateway retry within 30 minutes returns the open request instead of a duplicate.
+        recent = (SupportRequest.query.filter_by(phone_number=msisdn, topic=topic, channel=channel, status="open")
+                  .filter(SupportRequest.created_at >= datetime.now(timezone.utc) - timedelta(minutes=30))
+                  .order_by(SupportRequest.created_at.desc()).first())
+        if recent is not None:
+            return recent.reference
         reference = "HLP-" + secrets.token_hex(3).upper()
         db.session.add(
             SupportRequest(reference=reference, phone_number=msisdn, beneficiary_id=beneficiary_id,

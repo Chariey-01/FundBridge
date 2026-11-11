@@ -49,8 +49,20 @@ class InMemoryMessagingStore:
     def save_preference(self, msisdn: str, preference: Preference) -> None:
         self.preferences[msisdn] = replace(preference)
 
+    def first_delivery(self, channel: str, key: str) -> bool:
+        with self._lock:
+            seen = self.__dict__.setdefault("_deliveries", set())
+            if (channel, key) in seen:
+                return False
+            seen.add((channel, key))
+            return True
+
     def open_support_request(self, *, msisdn, beneficiary_id, channel, topic, priority) -> str:
         with self._lock:
+            for existing in self.support_requests:  # repeated dial or a gateway retry: one open request
+                if (existing["msisdn"], existing["topic"], existing["channel"], existing["status"]) == (
+                        msisdn, topic, channel, "open"):
+                    return existing["reference"]
             reference = "HLP-" + secrets.token_hex(3).upper()
             self.support_requests.append(
                 {"reference": reference, "msisdn": msisdn, "beneficiary_id": beneficiary_id, "channel": channel,

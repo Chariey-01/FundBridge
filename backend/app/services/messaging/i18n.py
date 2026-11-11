@@ -78,7 +78,7 @@ TEXT: dict[str, dict[str, str]] = {
         "search_prompt": "Andika neno la kutafuta, mfano shule au kliniki:",
         "search_none": "Hakuna kampeni hai inayolingana na '{query}'.",
         "search_results": "{lines}\nChangia mtandaoni: {url}",
-        "donate_info": "Wachangiaji hutoa mtandaoni kwa PayPal kupitia {url}. Shiriki kiungo cha kampeni yako. "
+        "donate_info": "Wachangiaji hutoa kwa PayPal: {url}. Shiriki kiungo cha kampeni yako. "
                        "FundBridge haitakuomba kutuma pesa ili upokee michango.",
         "help_menu": "Msaada\n1. Wakala anipigie\n2. Ripoti tatizo\n3. Nimebadilisha simu au laini",
         "help_opened": "Ombi limepokelewa. Kumb {ref}. Wakala atawasiliana nawe.",

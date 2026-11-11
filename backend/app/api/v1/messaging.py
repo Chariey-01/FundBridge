@@ -14,8 +14,10 @@ Simulator (only when MESSAGING_SIMULATOR_ENABLED=true; every response is labelle
 
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
+import re
 from typing import Any
 
 from flask import Blueprint, Flask, Response, current_app, request
@@ -31,6 +33,8 @@ from app.services.messaging.ports import BeneficiaryDirectory, MessagingStore
 from app.services.messaging.service import MessagingService, MessagingSettings
 
 bp = Blueprint("fundbridge_messaging", __name__)
+
+log = logging.getLogger("fundbridge.messaging")
 
 MESSAGING_EXTENSION = "fundbridge.messaging"
 _SIMULATOR_PAGE = pathlib.Path(__file__).resolve().parents[2] / "integrations" / "messaging" / "simulator.html"
@@ -56,7 +60,8 @@ def build_gateway(app: Flask):
         username, api_key = _setting(app, "AT_USERNAME"), _setting(app, "AT_API_KEY")
         if username and api_key:
             return AfricasTalkingSmsGateway(username=username, api_key=api_key,
-                                            sender_id=_setting(app, "AT_SENDER_ID"))
+                                            sender_id=_setting(app, "AT_SENDER_ID"),
+                                            api_base_url=_setting(app, "AT_API_BASE_URL"))
         app.logger.warning("SMS_PROVIDER=africastalking but AT_USERNAME/AT_API_KEY are missing; using simulator.")
     elif provider != "simulator":
         raise ValueError("SMS_PROVIDER must be 'simulator' or 'africastalking'")
@@ -78,6 +83,7 @@ def init_messaging(
         public_base_url=_setting(app, "PUBLIC_BASE_URL") or _setting(app, "FRONTEND_ORIGIN") or "http://localhost:3000",
         ussd_code=_setting(app, "USSD_SERVICE_CODE", "*384*123#"),
         default_country=_setting(app, "MESSAGING_DEFAULT_COUNTRY", "KE"),
+        dedup_secret=str(app.config.get("SECRET_KEY") or ""),
     )
 
     assistant = None
@@ -186,7 +192,34 @@ def sms_inbound():
     sender = form.get("from")
     if not sender:
         return error("VALIDATION_ERROR", "Missing sender.", 400, {"from": ["Required."]})
-    _service().handle_inbound_sms(phone_number=sender, text=form.get("text", ""))
+    _service().handle_inbound_sms(phone_number=sender, text=form.get("text", ""), message_id=form.get("id"))
+    return _plain("")
+
+
+# Delivery statuses Africa's Talking reports for an outbound SMS. "Success" is the only handset delivery.
+DELIVERY_FINAL = {"Success", "Failed", "Rejected"}
+
+
+@bp.post("/sms/delivery")
+def sms_delivery_report():
+    """Africa's Talking delivery-report callback. Authenticated like the other callbacks, idempotent.
+
+    Recorded in the provider-event table (message id and status, no phone number or text) and logged
+    with a masked number. Outbound messages are not stored, so a report is not linked to a message.
+    """
+    denied = _callback_denied()
+    if denied is not None:
+        return denied
+    form = request.form
+    message_id, status = (form.get("id") or "").strip(), (form.get("status") or "").strip()
+    if not message_id or not status or len(message_id) > 120 or not re.fullmatch(r"[A-Za-z]{2,24}", status):
+        return error("VALIDATION_ERROR", "Missing or invalid delivery report.", 400,
+                     {"id": ["Required."], "status": ["Required."]})
+    store = _ext()["service"].store
+    if store.first_delivery("sms-dlr", f"{message_id}:{status}"):
+        level = logging.WARNING if status in ("Failed", "Rejected") else logging.INFO
+        log.log(level, "SMS delivery report id=%s status=%s reason=%s to=%s", message_id[:40], status,
+                (form.get("failureReason") or "-")[:60], mask_msisdn(form.get("phoneNumber") or ""))
     return _plain("")
 
 

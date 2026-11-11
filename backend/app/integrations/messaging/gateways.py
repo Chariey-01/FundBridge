@@ -26,6 +26,15 @@ from typing import Protocol
 import requests
 
 from app.services.messaging.phone import mask_msisdn
+from app.services.messaging.text import SMS_MAX_SEGMENTS, fit
+
+# Concatenated SMS segments carry a header, so each holds 153 GSM characters.
+SMS_MAX_CHARS = 153 * SMS_MAX_SEGMENTS
+
+
+def prepare_sms(message: str) -> str:
+    """GSM 7-bit only (a single other character triples the cost) and at most two segments."""
+    return fit(message, SMS_MAX_CHARS)
 
 log = logging.getLogger("fundbridge.messaging")
 
@@ -55,6 +64,7 @@ class SimulatedSmsGateway:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send(self, to: str, message: str) -> SendResult:
+        message = prepare_sms(message)
         with self._lock:
             message_id = f"SIM-{next(self._ids):06d}"
             self.outbox.append(
@@ -81,7 +91,7 @@ class AfricasTalkingSmsGateway:
     name = "africastalking"
 
     def __init__(self, *, username: str, api_key: str, sender_id: str | None = None, timeout: float = 10.0,
-                 session: requests.Session | None = None) -> None:
+                 session: requests.Session | None = None, api_base_url: str | None = None) -> None:
         if not username or not api_key:
             raise ValueError("Africa's Talking username and API key are required")
         self.username = username
@@ -90,11 +100,12 @@ class AfricasTalkingSmsGateway:
         self.timeout = timeout
         self.mode = "africastalking_sandbox" if username == "sandbox" else "africastalking_live"
         host = "api.sandbox.africastalking.com" if username == "sandbox" else "api.africastalking.com"
-        self.url = f"https://{host}/version1/messaging"
+        # AT_API_BASE_URL is only for an egress proxy or a test double; normally the host follows the username.
+        self.url = f"{(api_base_url or f'https://{host}').rstrip('/')}/version1/messaging"
         self._session = session or requests.Session()
 
     def send(self, to: str, message: str) -> SendResult:
-        data = {"username": self.username, "to": to, "message": message}
+        data = {"username": self.username, "to": to, "message": prepare_sms(message)}
         if self.sender_id:
             data["from"] = self.sender_id
         try:

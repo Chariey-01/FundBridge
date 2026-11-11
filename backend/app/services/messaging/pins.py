@@ -65,7 +65,8 @@ class PinService:
         """Agent/admin action: the beneficiary creates a new PIN on next use."""
         self.store.delete_pin(beneficiary_id)
 
-    def verify(self, beneficiary_id: str, pin: str) -> PinCheck:
+    def verify(self, beneficiary_id: str, pin: str, *, count_failure: bool = True) -> PinCheck:
+        """``count_failure=False`` is for a gateway retry of a step already counted once."""
         record = self.store.get_pin(beneficiary_id)
         if record is None:
             return PinCheck("not_set")
@@ -78,6 +79,8 @@ class PinService:
                 record.failed_attempts, record.locked_until = 0, None
                 self.store.save_pin(beneficiary_id, record)
             return PinCheck("ok")
+        if not count_failure:
+            return PinCheck("invalid", attempts_left=max(1, MAX_ATTEMPTS - record.failed_attempts))
         record.failed_attempts = (0 if locked_until else record.failed_attempts) + 1
         record.locked_until = None
         if record.failed_attempts >= MAX_ATTEMPTS:

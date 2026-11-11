@@ -71,3 +71,7 @@ class MessagingStore(Protocol):
     def open_support_request(
         self, *, msisdn: str, beneficiary_id: str | None, channel: str, topic: str, priority: str
     ) -> str: ...
+
+    def first_delivery(self, channel: str, key: str) -> bool:
+        """Record an inbound gateway event; False if this exact event was already processed (a retry)."""
+        ...
