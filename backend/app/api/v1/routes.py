@@ -40,10 +40,17 @@ def idempotency_lock(actor_id, key):
     digest=hashlib.sha256(f"donation-order:{actor_id}:{key}".encode()).digest()
     lock_id=int.from_bytes(digest[:8], byteorder="big", signed=True)
     db.session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
-def serialize_campaign(x, *, include_beneficiary=False, include_raised=False):
+def serialize_campaign(x, *, include_beneficiary=False, include_raised=False, include_timestamps=False,
+                       include_submission_timestamp=False):
     data={"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
     if include_beneficiary: data["beneficiary_id"]=x.beneficiary_id
     if include_raised: data["raised"]=raised_total(x.id, x.goal_currency).to_dict()
+    if include_timestamps:
+        data["created_at"]=x.created_at.isoformat(); data["updated_at"]=x.updated_at.isoformat()
+    if include_submission_timestamp:
+        # A submitted campaign is immutable until review; updated_at is the timestamp of
+        # the submission state transition and avoids inventing a separate financial field.
+        data["submitted_at"]=x.updated_at.isoformat()
     return data
 def serialize_donation(x): return {"id":x.id,"campaign_id":x.campaign_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 def serialize_payout(x): return {"id":x.id,"campaign_id":x.campaign_id,"beneficiary_id":x.beneficiary_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
@@ -151,12 +158,25 @@ def campaign_review_queue():
     except ValueError: raise ValueError("VALIDATION_ERROR")
     query=Campaign.query.filter_by(status=CampaignStatus.submitted,review_status="pending").order_by(Campaign.created_at.asc())
     total=query.count(); items=query.offset((page-1)*page_size).limit(page_size).all()
-    return ok([serialize_campaign(item,include_beneficiary=True,include_raised=True) for item in items],meta={"page":page,"page_size":page_size,"total":total})
+    return ok([serialize_campaign(item,include_beneficiary=True,include_raised=True,include_submission_timestamp=True) for item in items],meta={"page":page,"page_size":page_size,"total":total})
 
 @api.get("/me/campaigns")
 def my_campaigns():
     u=current_user()
     return ok([serialize_campaign(x,include_beneficiary=True) for x in Campaign.query.filter_by(creator_id=u.id).order_by(Campaign.created_at.desc()).all()])
+
+@api.get("/beneficiaries/me/campaigns")
+@roles_allowed(Role.beneficiary)
+def beneficiary_campaigns():
+    try:
+        page=max(1,int(request.args.get("page",1))); page_size=min(100,max(1,int(request.args.get("page_size",20))))
+    except ValueError: raise ValueError("VALIDATION_ERROR")
+    profile=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
+    if profile is None:
+        return ok([],meta={"page":page,"page_size":page_size,"total":0})
+    query=Campaign.query.filter_by(beneficiary_id=profile.id).order_by(Campaign.created_at.desc(),Campaign.id.desc())
+    total=query.count(); items=query.offset((page-1)*page_size).limit(page_size).all()
+    return ok([serialize_campaign(item,include_beneficiary=True,include_raised=True,include_timestamps=True) for item in items],meta={"page":page,"page_size":page_size,"total":total})
 
 @api.post("/beneficiaries")
 @roles_allowed(Role.agent,Role.admin)
