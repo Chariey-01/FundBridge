@@ -257,7 +257,9 @@ def reconcile_donation(donation_id):
     result=PayPalSandboxAdapter(current_app.config).get_order(donation.provider_order_id)
     # Do provider I/O before locking, then serialize the state transition and use a
     # fresh row. Waiting requests observe the committed completed/failed result.
-    donation=db.session.query(Donation).filter_by(id=donation_id).with_for_update().one()
+    # ``donation`` was read before provider I/O. Refresh the identity-map object
+    # after waiting on the lock so concurrent callers see the winner's commit.
+    donation=db.session.query(Donation).filter_by(id=donation_id).with_for_update().populate_existing().one()
     if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if result.get("status") == "COMPLETED":
         unit=(result.get("purchase_units") or [{}])[0]

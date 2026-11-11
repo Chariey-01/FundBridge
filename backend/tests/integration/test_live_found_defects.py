@@ -65,7 +65,11 @@ def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monke
 
     def create_order(self, donation, return_url, cancel_url):
         sent["reference_id"] = donation.id
-        return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}]}
+        return {
+            "id": "ORDER-REF-1", "status": "CREATED",
+            "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": donation.currency, "value": str(donation.amount)}}],
+            "links": [{"rel": "approve", "href": "https://pp/approve"}],
+        }
 
     monkeypatch.setattr(paypal.PayPalSandboxAdapter, "create_order", create_order)
     current_app.config["PAYPAL_CLIENT_ID"] = "sandbox-client"

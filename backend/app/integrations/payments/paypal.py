@@ -66,7 +66,12 @@ class PayPalSandboxAdapter:
             order_id = order.get("id")
             if not isinstance(order_id, str) or not order_id:
                 raise ValueError("PAYMENT_PROVIDER_RESPONSE_INVALID")
+            create_links = order.get("links")
             order = self.get_order(order_id)
+            # GET representation commonly omits approval links; retain the links from
+            # the validated creation response while using GET for financial fields.
+            if "links" not in order and isinstance(create_links, list):
+                order["links"] = create_links
         return self._validate_order_representation(order, donation)
 
     def capture_order(self, order_id):

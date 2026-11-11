@@ -251,9 +251,6 @@ def test_reconcile_before_capture_leaves_donation_pending(live):
     assert _funds(live, world["campaign"]["id"])["raised"] == "0.00"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT R-1b: when PayPal reports the order COMPLETED but the capture PENDING "
-                                       "(held for review), reconcile returns 400 PAYMENT_NOT_CONFIRMED; the contract says "
-                                       "non-final provider states leave the donation pending (200)")
 def test_reconcile_with_pending_capture_stays_pending(live):
     world = _published_campaign(live, title_word="Held")
     donor = live.account("donor")

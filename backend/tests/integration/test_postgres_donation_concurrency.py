@@ -8,7 +8,7 @@ import pytest
 
 from app import create_app
 from app.extensions import db
-from app.models.core import Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus, Role, User
+from app.models.core import BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus, Role, User
 from app.services.ledger import available_funds, reserve_payout
 from app.services.payments import mark_donation_completed
 
@@ -24,10 +24,13 @@ def _app_with_donor():
     with app.app_context():
         db.drop_all(); db.create_all()
         donor = User(email="donor-race@example.test", role=Role.donor); donor.set_password(PASSWORD)
-        campaign = Campaign(creator_id="creator", beneficiary_id="beneficiary", title="Donation race", slug="donation-race", description="x" * 30, category="education", goal_amount=Decimal("100"), goal_currency="USD", status=CampaignStatus.published)
-        db.session.add_all([donor, campaign]); db.session.commit()
+        db.session.add(donor); db.session.flush()
+        beneficiary = BeneficiaryProfile(display_name="Race beneficiary", phone_number="+254700009999", country_code="KE", verification_status="verified", payout_destination_reference="race-token")
+        db.session.add(beneficiary); db.session.flush()
+        campaign = Campaign(creator_id=donor.id, beneficiary_id=beneficiary.id, title="Donation race", slug="donation-race", description="x" * 30, category="education", goal_amount=Decimal("100"), goal_currency="USD", status=CampaignStatus.published)
+        db.session.add(campaign); db.session.commit()
         login = app.test_client().post("/api/v1/auth/login", json={"email": donor.email, "password": PASSWORD})
-        return app, campaign.id, donor.id, login.get_json()["data"]["access_token"]
+        return app, campaign.id, donor.id, beneficiary.id, login.get_json()["data"]["access_token"]
 
 
 def _parallel(work):
@@ -43,7 +46,7 @@ def _parallel(work):
 
 
 def test_eight_reconciles_credit_once_without_server_errors():
-    app, campaign_id, donor_id, token = _app_with_donor()
+    app, campaign_id, donor_id, _, token = _app_with_donor()
     with app.app_context():
         donation = Donation(campaign_id=campaign_id, donor_id=donor_id, amount=Decimal("5.00"), currency="USD", provider="paypal", provider_order_id="race-order", idempotency_key="race-reconcile", idempotency_fingerprint="x", status=DonationStatus.pending)
         db.session.add(donation); db.session.commit(); donation_id = donation.id
@@ -58,7 +61,7 @@ def test_eight_reconciles_credit_once_without_server_errors():
 
 
 def test_eight_identical_donation_orders_share_one_provider_order():
-    app, campaign_id, _, token = _app_with_donor(); calls = []
+    app, campaign_id, _, _, token = _app_with_donor(); calls = []
     def create_order(donation, *_):
         calls.append(donation.id)
         return {"id": f"order-{donation.id}", "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": "USD", "value": "5.00"}}]}
@@ -72,7 +75,7 @@ def test_eight_identical_donation_orders_share_one_provider_order():
 
 
 def test_conflicting_concurrent_donation_orders_return_clear_conflict():
-    app, campaign_id, _, token = _app_with_donor(); barrier = threading.Barrier(2); results = []
+    app, campaign_id, _, _, token = _app_with_donor(); barrier = threading.Barrier(2); results = []
     def create_order(donation, *_):
         return {"id": f"order-{donation.id}", "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": donation.currency, "value": str(donation.amount)}}]}
     def request(amount):
@@ -91,7 +94,7 @@ def test_conflicting_concurrent_donation_orders_return_clear_conflict():
 
 def test_donation_credit_and_payout_reservation_race_keeps_nonnegative_balance():
     """A payout either sees the credit and reserves it, or is safely rejected first."""
-    app, campaign_id, donor_id, _ = _app_with_donor()
+    app, campaign_id, donor_id, beneficiary_id, _ = _app_with_donor()
     with app.app_context():
         donation = Donation(campaign_id=campaign_id, donor_id=donor_id, amount=Decimal("10.00"), currency="USD", provider="paypal", provider_order_id="credit-race", idempotency_key="credit-race", idempotency_fingerprint="x", status=DonationStatus.pending)
         db.session.add(donation); db.session.commit(); donation_id = donation.id
@@ -105,7 +108,7 @@ def test_donation_credit_and_payout_reservation_race_keeps_nonnegative_balance()
     def reserve():
         with app.app_context():
             barrier.wait(); db.session.query(Campaign).filter_by(id=campaign_id).with_for_update().one()
-            payout = Payout(campaign_id=campaign_id, beneficiary_id="beneficiary", requested_by=donor_id, amount=Decimal("10.00"), currency="USD", destination_type="wallet", destination_reference="token", provider="simulator", idempotency_key="reserve-race", idempotency_fingerprint="x", status=PayoutStatus.requested)
+            payout = Payout(campaign_id=campaign_id, beneficiary_id=beneficiary_id, requested_by=donor_id, amount=Decimal("10.00"), currency="USD", destination_type="wallet", destination_reference="token", provider="simulator", idempotency_key="reserve-race", idempotency_fingerprint="x", status=PayoutStatus.requested)
             db.session.add(payout); db.session.flush()
             try:
                 reserve_payout(payout); db.session.commit(); outcome = "reserved"
