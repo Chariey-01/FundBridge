@@ -12,7 +12,7 @@ Implemented endpoints: `GET /health`, `GET /api/v1/public/config`, auth register
 
 Idempotency keys are scoped to the authenticated actor and operation. Replaying the same key with a different canonical request fingerprint returns `IDEMPOTENCY_KEY_REUSED`; a replay never returns another actor's resource. Payout requesters cannot approve their own requests, including admins.
 
-Unavailable (not simulated): guest donation/capture, logout/revocation, campaign review/publish, payout provider submission/callback reconciliation, AI, and SMS/USSD endpoints. These require final approved contracts and provider choices.
+Unavailable (not simulated): guest donation/capture, logout/revocation, payout provider submission/callback reconciliation, AI, and SMS/USSD endpoints. Campaign review/publish is implemented above; the remaining unavailable capabilities require final approved contracts and provider choices.
 
 Assisted onboarding is implemented for an agent/admin. It may link only an existing active account already provisioned with the `beneficiary` role; public registration always creates a donor and cannot grant roles. The role-provisioning and beneficiary-verification workflow is unavailable pending an approved admin/review contract. Payout requests reject profiles that are not `verified`.
 
