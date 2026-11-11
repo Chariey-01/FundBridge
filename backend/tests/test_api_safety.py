@@ -104,6 +104,16 @@ def test_campaign_keyword_search_returns_published_matches(app, client):
     response=client.get("/api/v1/campaigns?q=water")
     assert response.status_code == 200 and [x["id"] for x in response.json["data"]] == [campaign_id]
 
+def test_campaign_search_composes_category_and_keyword_filters(app, client):
+    with app.app_context():
+        health=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Clinic supplies",slug="clinic-supplies",description="Urgent local clinic supplies",category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published)
+        education=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="School supplies",slug="school-supplies",description="Urgent school supplies",category="education",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published)
+        db.session.add_all([health,education]); db.session.commit(); health_id=health.id
+    assert [x["id"] for x in client.get("/api/v1/campaigns?category=health&q=clinic").json["data"]] == [health_id]
+    assert [x["id"] for x in client.get("/api/v1/campaigns?category=health&q=health").json["data"]] == [health_id]
+    assert client.get("/api/v1/campaigns?category=health&q=school").json["data"] == []
+    assert client.get("/api/v1/campaigns?category=unknown&q=clinic").json["data"] == []
+
 def test_paypal_reconciliation_is_authoritative_and_idempotent(app, client):
     with app.app_context():
         user=User(email="reconcile@test",role=Role.donor); db.session.add(user); db.session.flush()

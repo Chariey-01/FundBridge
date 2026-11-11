@@ -173,7 +173,6 @@ DEFECT_M1B = ("DEFECT M-1b: a database built from the original a0d4581f14e2 (bef
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
-@pytest.mark.xfail(strict=True, reason=DEFECT_M1B)
 def test_upgrade_from_original_initial_schema_drops_global_key_uniqueness(backend, tmp_path):
     from flask_migrate import upgrade
 
