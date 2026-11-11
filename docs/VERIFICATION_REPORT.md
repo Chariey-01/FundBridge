@@ -12,7 +12,7 @@ FundBridge's side of the integration, never the provider's live behaviour.
 | Question | Answer |
 |---|---|
 | Ready for the recorded demonstration? | **Yes, for the backend, AI (with fallbacks) and the phone simulator, all with simulation labelled.** Not for the web UI until Cursor publishes it. A real PayPal sandbox payment and a real OpenAI call each need the owner's credentials (about 30 minutes each; see owner actions). |
-| Ready for a real production launch? | **No.** There is no payout provider (payouts stop at "approved"), no live PayPal, no approved Africa's Talking sender ID, shortcode or USSD code, no verified OpenAI model, no published frontend, and no native-speaker review of the Kiswahili. The compliance questions (KYC/AML for payouts, data protection) are open. |
+| Ready for a real production launch? | **No.** There is no payout provider (payouts stop at "approved"), no live PayPal, no approved Africa's Talking sender ID, shortcode or USSD code, no verified OpenAI model, no published frontend, and no native-speaker review of the Kiswahili. Codex's [`BACKEND_RELEASE_READINESS.md`](BACKEND_RELEASE_READINESS.md) adds: no refund, reversal or dispute handling; no token revocation or refresh; no backups, restore drill or monitoring; and a shared rate-limit store is needed for more than one worker. The compliance questions (KYC/AML for payouts, data protection) are open. |
 
 ## Feature matrix
 

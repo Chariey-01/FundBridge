@@ -31,7 +31,7 @@ The cases use the seeded accounts (same `DEMO_PASSWORD`) and seeded numbers. API
 
 | # | Steps | Expected API calls | Must show | Must never show |
 |---|---|---|---|---|
-| R1 | Review queue | **gap G-7**: until the queue endpoint exists, open by campaign ID (`demo-water-tank`, printed by the seed) | the submitted campaign; approve and reject | |
+| R1 | Review queue | `reviewQueue()` lists `demo-water-tank` (submitted); page through with `page`/`page_size` | the submitted campaign; approve and reject | |
 | R2 | Approve `demo-water-tank` | `reviewCampaign(id, "approve")` | status `published`; it appears in public browse | |
 | R3 | Beneficiary verification | `listBeneficiaries`, `getBeneficiary`, `decideVerification(id, decision, revision)` | profiles with `has_payout_destination`; on `409 PROFILE_CHANGED`, "Profile changed, review again" | the payout destination value |
 | R4 | Approve Baraka's USD 30 payout | `listPayouts`, `reviewPayout(id, "approve")` | "Approved, being prepared" (pending style) | "Paid", "Sent" or "Completed" |
@@ -42,7 +42,7 @@ The cases use the seeded accounts (same `DEMO_PASSWORD`) and seeded numbers. API
 | # | Steps | Expected API calls | Must show | Must never show |
 |---|---|---|---|---|
 | B1 | Dashboard | `myBeneficiaryProfile`, `listPayouts` | verified; payouts "Approved, being prepared" (USD 40) and "Not approved" (USD 15) | "paid" |
-| B2 | Request a payout | **gap G-6**: no endpoint lists the beneficiary's campaigns. Until it exists, use the campaign ID printed by the seed. `requestPayout` | `requested`; `available` falls by the amount | success wording |
+| B2 | Request a payout | pick the campaign from `beneficiaryCampaigns()`, then `requestPayout` | `requested`; `available` falls by the amount | success wording |
 | B3 | Request more than available (USD 1000) | `requestPayout` → `INSUFFICIENT_AVAILABLE_FUNDS` | a clear error | |
 | B4 | Change phone number | `updateMyBeneficiaryProfile({phone_number})` → `reverification_required` | "Re-verification required; payouts and the phone service are paused until an agent checks your details" | |
 | B5 | Feature-phone help | `channelModes` | "Simulated SMS, nothing is sent to phones" and "USSD … not yet verified on a live network" | a claim that SMS was delivered |

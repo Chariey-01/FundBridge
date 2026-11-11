@@ -28,7 +28,7 @@ State as of 2026-11-11, backend `feat/backend-core` `b45ee29`. Evidence: `docs/i
 | Branch published and reviewable | ⏸ | Cursor (`feat/frontend-core` is not on GitHub) |
 | Build and type-check with `contracts/` | ⏸ | Cursor; `contracts/` itself: `npm test` ✅ |
 | Browser walkthrough D1–X4 | ⏸ | Cursor (`docs/integration/FRONTEND_WALKTHROUGH.md`) |
-| Beneficiary campaign list (G-6), reviewer queue (G-7) | ❌ | Codex (proposed contracts in `tests/integration/test_proposed_contract_gaps.py`). Demo workaround: campaign IDs printed by the seed. |
+| Beneficiary campaign list (G-6), reviewer queue (G-7) | ✅ | Codex `967781d`; `tests/integration/test_beneficiary_and_review_queues.py`; `contracts/` `beneficiaryCampaigns()`, `reviewQueue()` |
 
 ## AI and messaging
 | Item | Status | Evidence |

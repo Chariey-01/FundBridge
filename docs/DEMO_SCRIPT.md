@@ -64,4 +64,4 @@ In the **phone simulator** (it says *simulated* on screen):
 - **AI errors:** the app falls back to templates or keyword search. Say so and continue.
 - **PayPal unavailable:** use the seeded history (section 2, the no-credentials case).
 - **Simulator disabled:** set `MESSAGING_SIMULATOR_ENABLED=true` (demo deployments only).
-- **The beneficiary payout form cannot find a campaign:** this is gap G-6. Use the campaign ID printed by the seed.
+- **The beneficiary payout form cannot find a campaign:** the backend must be `967781d` or later (`GET /beneficiaries/me/campaigns`). On an older deployment, use the campaign ID printed by the seed.

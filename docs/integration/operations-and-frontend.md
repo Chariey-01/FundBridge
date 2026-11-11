@@ -43,9 +43,9 @@ Use `contracts/fundbridge-client.ts` (consumption steps: `contracts/README.md`).
 | Donate | `createDonationOrder` → redirect to `approval_url` → return page → `completePayPalReturn` (capture, then reconcile if ambiguous, then re-read) | `confirmed` (success), `not_approved` (donor did not finish at PayPal), `provider_unavailable` (re-check later), `needs_review` (contact support, quote `error.requestId`), `pending` |
 | My donations | `myDonations` + `presentDonation` | Only `completed` is success |
 | Creator: new campaign | optional `draftCampaign` (suggestion only, shows `warnings`), then `createCampaign`, `updateCampaign`, `submitCampaign` | `draft` → `submitted` → `published`, or back to `draft` with `review_status: rejected` |
-| Reviewer queue | `reviewCampaign` (by id only; **no endpoint lists submitted campaigns**, gap G-7), `listBeneficiaries("unverified" / "reverification_required")`, `getBeneficiary`, `decideVerification(id, decision, revision)` | `409 PROFILE_CHANGED`: reload the profile and review again |
+| Reviewer queue | `reviewQueue(page)` (submitted campaigns, oldest first, `{page,page_size,total}`), `getCampaign`, `reviewCampaign`, `listBeneficiaries("unverified" / "reverification_required")`, `getBeneficiary`, `decideVerification(id, decision, revision)` | `409 PROFILE_CHANGED`: reload the profile and review again |
 | Agent: onboard beneficiary | `onboardBeneficiary` | New profiles are `unverified` until a reviewer decides |
-| Beneficiary dashboard | `myBeneficiaryProfile`, `campaignFunds` (full), `listPayouts`, `requestPayout`, `presentPayout`. **No endpoint lists the beneficiary's campaigns** (gap G-6), so the payout form cannot discover a `campaign_id` until the backend adds one | `BENEFICIARY_NOT_VERIFIED`, `INSUFFICIENT_AVAILABLE_FUNDS`, `PAYOUT_DESTINATION_UNVERIFIED`; editing phone or destination returns `reverification_required` |
+| Beneficiary dashboard | `myBeneficiaryProfile`, `beneficiaryCampaigns(page)` (own campaigns, every status, ledger-backed `raised`; gives the payout form its `campaign_id`), `campaignFunds` (full), `listPayouts`, `requestPayout`, `presentPayout`, `explainStatus({kind: "payout", id})` (plain-language explanation from the record; show `status_label`/`confirmed` as the status) | `BENEFICIARY_NOT_VERIFIED`, `INSUFFICIENT_AVAILABLE_FUNDS`, `PAYOUT_DESTINATION_UNVERIFIED`; editing phone or destination returns `reverification_required` |
 | Admin: people | `findAccounts`, `assignRole` | `403 SELF_ROLE_CHANGE_FORBIDDEN` |
 | Status banner | `publicConfig`, `integrationStatus` → `channelModes` (or `channelBanner` in the examples) | Simulated/sandbox labels; AI "not responding" when `last_error` and not `model_verified` |
 | Agent: phone support | `supportRequests`, admin `resetPhonePin` | Phone numbers are personal data: show them to staff only |
@@ -83,10 +83,8 @@ Use `contracts/fundbridge-client.ts` (consumption steps: `contracts/README.md`).
 - editing goal or currency after creation (`PATCH` changes only title, description and category, and only in draft);
 - closing a campaign;
 - slug lookup (G-8);
-- pagination beyond 50;
+- pagination of the public listing beyond 50 (the review queue and beneficiary list are paginated);
 - payout submission or settlement (payouts stop at `approved_for_submission`);
-- a beneficiary's own campaign list (G-6);
-- a reviewer queue of submitted campaigns (G-7).
 
 **Payload notes:**
 - Campaign create takes flat `goal_amount`/`goal_currency`, but responses nest `goal: {amount, currency}`.
@@ -118,8 +116,8 @@ Use `contracts/fundbridge-client.ts` (consumption steps: `contracts/README.md`).
 | 429 | `RATE_LIMITED` | `Retry-After` header and `details.retry_after_seconds` |
 | 502 | `PROVIDER_REQUEST_REJECTED` | PayPal refused (`details.provider_status`, `details.provider_issue`, e.g. `ORDER_NOT_APPROVED`) |
 | 503 | `PROVIDER_UNAVAILABLE` | PayPal unreachable or timed out; the donation may or may not have been captured, so reconcile and re-read it |
+| 200 | Donation `pending` (from reconcile) | PayPal holds the capture or the order has not completed; keep showing pending. It is never credited until a completed capture is authoritatively verified. |
 | 400 | `PAYMENT_ORDER_MISMATCH` (from create order) | The provider's order does not match the donation (amount, currency or reference). Nothing is stored; show a retry |
-| 500 | `INTERNAL_ERROR` on a retried order or reconcile | Open items S-5/R-2: a concurrent retry can return 500 although the donation exists. Re-read with `myDonations`/`getDonation` before showing an error |
 | 405 | `METHOD_NOT_ALLOWED` | Envelope instead of HTML |
 | 500 | `INTERNAL_ERROR` | `details.request_id` for support |
 
