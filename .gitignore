@@ -14,7 +14,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -151,6 +150,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -204,6 +205,18 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# JavaScript dependencies and generated build output. Source folders are not ignored.
+node_modules/
+.next/
+.nuxt/
+coverage/
+*.tsbuildinfo
+
+# Local keys and secret directories (never commit credentials)
+*.pem
+*.key
+secrets/
 
 # Ruff stuff:
 .ruff_cache/
