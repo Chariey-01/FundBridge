@@ -38,7 +38,7 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 | When | Backend commit | Branch commit | Suite | Result |
 |---|---|---|---|---|
 | 2026-11-11 evening | `7115094` | merge `078d215` (before the guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | 285 passed, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 3 failed = the R-2, S-5 and X-2 strict xfails now passing; converted to regression tests, then `tests/e2e` 28/28 and `test_live_found_defects` + `test_migrations` all pass |
-| 2026-11-11 evening | `7115094` | this commit | `tests/ai`, `tests/messaging`, AI/messaging integration | 141 passed, 4 skipped (opt-in real OpenAI) |
+| 2026-11-11 evening | `7115094` | `a1cf9c9` (guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e, including the contracts type-check and live-API client test), gunicorn | **290 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 0 failed |
 | 2026-11-11 evening | `7115094` | merge `078d215` | clean clone → `DEPLOYMENT.md` local setup → `scripts/smoke_test.py` | 21 PASS, 2 SKIP (translation without a key; PayPal order is opt-in), 0 FAIL |
 | 2026-11-11 | `b45ee29` | `dbaa6e1` plus the docs and contract-gap tests in the next commit | `pytest tests`, PostgreSQL 16.15 (integration and e2e), gunicorn | **275 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 8 xfailed (R-2, S-5, X-2, M-2, M-1b ×2, G-6, G-7) |
 | 2026-11-11 | `b45ee29` | same | `contracts`: `npm test` | tsc --strict ✅, 11/11 |
