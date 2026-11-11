@@ -223,16 +223,45 @@ def test_paypal_webhook_requires_verified_signature_and_is_idempotent(live):
     assert _funds(live, cid)["raised"] == "15.00"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT R-1: when PayPal captured but the backend missed the response (timeout), "
-                                       "a retried capture gets 422 ORDER_ALREADY_CAPTURED and the donation stays pending "
-                                       "unless the webhook arrives; capture should fetch the order and verify it")
-def test_capture_retry_after_provider_side_capture_completes_donation(live):
+def test_reconcile_after_provider_side_capture_completes_donation_once(live):
+    """Was DEFECT R-1; fixed in feat/backend-core ee43660 by POST /donations/{id}/reconcile (no second capture)."""
     world = _published_campaign(live, title_word="Bursary")
+    cid, donor = world["campaign"]["id"], live.account("donor")
+    donation, order_id = _donate(live, donor, cid, "9.00", capture=False)
+    live.paypal.capture_out_of_band(order_id)  # PayPal captured; our capture response was lost
+    retry = _err(live.call("POST", f"/api/v1/donations/{donation['id']}/capture", donor["token"]), 502,
+                 "PROVIDER_REQUEST_REJECTED")
+    assert retry["details"]["provider_issue"] == "ORDER_ALREADY_CAPTURED"
+    assert _ok(live.call("GET", f"/api/v1/donations/{donation['id']}", donor["token"]))["status"] == "pending"
+    captures_before = sum(1 for r in live.paypal.requests if r["path"].endswith(f"{order_id}/capture"))
+    done = _ok(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", donor["token"]))
+    assert done["status"] == "completed"
+    assert _ok(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", donor["token"]))["status"] == "completed"
+    assert sum(1 for r in live.paypal.requests if r["path"].endswith(f"{order_id}/capture")) == captures_before
+    assert _funds(live, cid)["raised"] == "9.00"  # credited exactly once
+    stranger = live.account("donor", "reconcile-stranger")
+    _err(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", stranger["token"]), 403, "FORBIDDEN")
+
+
+def test_reconcile_before_capture_leaves_donation_pending(live):
+    world = _published_campaign(live, title_word="Sports")
     donor = live.account("donor")
-    donation, order_id = _donate(live, donor, world["campaign"]["id"], "9.00", capture=False)
-    live.paypal.capture_out_of_band(order_id)
-    live.call("POST", f"/api/v1/donations/{donation['id']}/capture", donor["token"])
-    assert _ok(live.call("GET", f"/api/v1/donations/{donation['id']}", donor["token"]))["status"] == "completed"
+    donation, _ = _donate(live, donor, world["campaign"]["id"], "4.00", capture=False)  # approved, not captured
+    assert _ok(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", donor["token"]))["status"] == "pending"
+    assert _funds(live, world["campaign"]["id"])["raised"] == "0.00"
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT R-1b: when PayPal reports the order COMPLETED but the capture PENDING "
+                                       "(held for review), reconcile returns 400 PAYMENT_NOT_CONFIRMED; the contract says "
+                                       "non-final provider states leave the donation pending (200)")
+def test_reconcile_with_pending_capture_stays_pending(live):
+    world = _published_campaign(live, title_word="Held")
+    donor = live.account("donor")
+    donation, order_id = _donate(live, donor, world["campaign"]["id"], "6.00", capture=False)
+    live.paypal.capture_out_of_band(order_id, capture_status="PENDING")
+    res = live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", donor["token"])
+    assert _funds(live, world["campaign"]["id"])["raised"] == "0.00"  # never credited (holds either way)
+    assert res.status_code == 200 and res.json()["data"]["status"] == "pending"
 
 
 def test_payout_request_review_reservation_and_tracking(live):

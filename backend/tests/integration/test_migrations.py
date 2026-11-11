@@ -107,15 +107,46 @@ def test_full_downgrade_then_upgrade(backend, tmp_path):
             _dispose(url)
 
 
-DEFECT_M1 = ("DEFECT M-1: d7f2b35d0ed5 adds NOT NULL idempotency_fingerprint without a server default, so "
-             "upgrading a database that already holds donations fails (and a database created from the original "
-             "a0d4581f14e2 keeps the old global idempotency_key unique constraints, because that migration was "
-             "edited in place)")
+SEED_AT_18323330 = [
+    "INSERT INTO \"user\" (id, email, role, status, created_at, updated_at) VALUES "
+    "('u1', 'd@example.test', 'donor', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+    "('u2', 'c@example.test', 'creator', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+    "('u3', 'b@example.test', 'beneficiary', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    "INSERT INTO beneficiary_profile (id, user_id, display_name, phone_number, preferred_language, country_code, "
+    "verification_status, payout_destination_reference, created_at, updated_at) VALUES ('b1', 'u3', 'B', "
+    "'+254700000001', 'en', 'KE', 'verified', 'tok', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    "INSERT INTO campaign (id, creator_id, beneficiary_id, title, slug, description, category, goal_amount, "
+    "goal_currency, status, review_status, created_at, updated_at) VALUES ('c1', 'u2', 'b1', 'Title', 'slug-one', "
+    "'a long enough description', 'health', 100, 'USD', 'published', 'approved', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    "INSERT INTO donation (id, campaign_id, donor_id, amount, currency, provider, provider_order_id, "
+    "provider_capture_id, status, idempotency_key, created_at, updated_at) VALUES "
+    "('d1', 'c1', 'u1', 25.50, 'USD', 'paypal', 'ORDER-1', 'CAP-1', 'completed', 'k1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
+    "('d2', 'c1', 'u1', 5.00, 'USD', 'paypal', 'ORDER-2', NULL, 'pending', 'k2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    "INSERT INTO financial_ledger_entry (id, campaign_id, donation_id, payout_id, entry_type, amount, currency, "
+    "reference, created_at) VALUES ('l1', 'c1', 'd1', NULL, 'donation_completed', 25.50, 'USD', 'donation-capture:CAP-1', "
+    "CURRENT_TIMESTAMP)",
+    "INSERT INTO payout (id, beneficiary_id, campaign_id, amount, currency, destination_type, destination_reference, "
+    "provider, status, idempotency_key, created_at, updated_at) VALUES ('p1', 'b1', 'c1', 10.00, 'USD', 'wallet', "
+    "'tok', 'simulator', 'requested', 'pk1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    "INSERT INTO financial_ledger_entry (id, campaign_id, donation_id, payout_id, entry_type, amount, currency, "
+    "reference, created_at) VALUES ('l2', 'c1', NULL, 'p1', 'payout_reserved', 10.00, 'USD', 'payout-reservation:p1', "
+    "CURRENT_TIMESTAMP)",
+]
+FINANCIAL = {
+    "donation": "SELECT id, amount, currency, status, provider_order_id, provider_capture_id, idempotency_key FROM donation",
+    "ledger": "SELECT id, entry_type, amount, currency, reference, donation_id, payout_id FROM financial_ledger_entry",
+    "payout": "SELECT id, amount, currency, status, destination_reference, idempotency_key FROM payout",
+}
+
+
+def _financial_rows(conn):
+    return {name: sorted(tuple(str(v) for v in row) for row in conn.execute(sa.text(sql)))
+            for name, sql in FINANCIAL.items()}
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
-@pytest.mark.xfail(strict=True, reason=DEFECT_M1)
-def test_upgrade_with_existing_donation_rows(backend, tmp_path):
+def test_upgrade_preserves_existing_financial_data(backend, tmp_path):
+    """Was DEFECT M-1 (NOT NULL fingerprint without default); fixed in feat/backend-core ee43660 by backfilling."""
     from flask_migrate import upgrade
 
     url, app = _app_for(backend, tmp_path)
@@ -123,23 +154,51 @@ def test_upgrade_with_existing_donation_rows(backend, tmp_path):
         try:
             upgrade(directory=str(MIGRATIONS), revision="18323330d500")
             with db.engine.begin() as conn:
-                conn.execute(sa.text(
-                    "INSERT INTO \"user\" (id, email, role, status, created_at, updated_at) "
-                    "VALUES ('u1', 'd@example.test', 'donor', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
-                    "('u2', 'c@example.test', 'creator', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
-                conn.execute(sa.text(
-                    "INSERT INTO beneficiary_profile (id, display_name, phone_number, preferred_language, country_code, "
-                    "verification_status, created_at, updated_at) VALUES ('b1', 'B', '+254700000001', 'en', 'KE', "
-                    "'verified', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
-                conn.execute(sa.text(
-                    "INSERT INTO campaign (id, creator_id, beneficiary_id, title, slug, description, category, goal_amount, "
-                    "goal_currency, status, review_status, created_at, updated_at) VALUES ('c1', 'u2', 'b1', 'Title', "
-                    "'slug-one', 'a long enough description', 'health', 100, 'USD', 'published', 'approved', "
-                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
-                conn.execute(sa.text(
-                    "INSERT INTO donation (id, campaign_id, donor_id, amount, currency, provider, status, idempotency_key, "
-                    "created_at, updated_at) VALUES ('d1', 'c1', 'u1', 5, 'USD', 'paypal', 'pending', 'k1', "
-                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+                for statement in SEED_AT_18323330:
+                    conn.execute(sa.text(statement))
+                before = _financial_rows(conn)
             upgrade(directory=str(MIGRATIONS))
+            with db.engine.connect() as conn:
+                assert _financial_rows(conn) == before  # nothing lost or altered
+                fingerprints = dict(conn.execute(sa.text("SELECT id, idempotency_fingerprint FROM donation")).all())
+                assert fingerprints == {"d1": "legacy-d1", "d2": "legacy-d2"}
+                assert conn.execute(sa.text("SELECT requested_by FROM payout")).scalar() is None
+        finally:
+            _dispose(url)
+
+
+DEFECT_M1B = ("DEFECT M-1b: a database built from the original a0d4581f14e2 (before c3e4e3a edited it in place) keeps "
+              "the global UNIQUE(idempotency_key) on donation and payout after upgrading to head, so two users who send "
+              "the same Idempotency-Key collide (IntegrityError, HTTP 500) instead of getting independent requests")
+
+
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
+@pytest.mark.xfail(strict=True, reason=DEFECT_M1B)
+def test_upgrade_from_original_initial_schema_drops_global_key_uniqueness(backend, tmp_path):
+    from flask_migrate import upgrade
+
+    url, app = _app_for(backend, tmp_path)
+    with app.app_context():
+        try:
+            upgrade(directory=str(MIGRATIONS), revision="18323330d500")
+            with db.engine.begin() as conn:
+                # Recreate what the original initial migration (git show 1a3a9d9) created.
+                if backend == "postgresql":
+                    conn.execute(sa.text("ALTER TABLE donation ADD CONSTRAINT donation_idempotency_key_key "
+                                         "UNIQUE (idempotency_key)"))
+                else:
+                    conn.execute(sa.text("CREATE UNIQUE INDEX donation_idempotency_key_key ON donation (idempotency_key)"))
+                for statement in SEED_AT_18323330[:3]:
+                    conn.execute(sa.text(statement))
+                conn.execute(sa.text(
+                    "INSERT INTO donation (id, campaign_id, donor_id, amount, currency, provider, status, "
+                    "idempotency_key, created_at, updated_at) VALUES ('d1', 'c1', 'u1', 5, 'USD', 'paypal', "
+                    "'pending', 'shared-key', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
+            upgrade(directory=str(MIGRATIONS))
+            with db.engine.begin() as conn:  # a different donor reusing the key must be allowed after the upgrade
+                conn.execute(sa.text(
+                    "INSERT INTO donation (id, campaign_id, donor_id, amount, currency, provider, status, "
+                    "idempotency_key, idempotency_fingerprint, created_at, updated_at) VALUES ('d2', 'c1', 'u2', 5, "
+                    "'USD', 'paypal', 'pending', 'shared-key', 'fp', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"))
         finally:
             _dispose(url)

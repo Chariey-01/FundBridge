@@ -95,12 +95,13 @@ class PayPalDouble(_Double):
         with self.lock:
             self.orders[order_id]["status"] = "APPROVED"
 
-    def capture_out_of_band(self, order_id: str) -> None:
-        """PayPal captured the order but the backend never saw the response (for example a timeout)."""
+    def capture_out_of_band(self, order_id: str, capture_status: str = "COMPLETED") -> None:
+        """PayPal captured the order but the backend never saw the response (for example a timeout).
+        ``capture_status="PENDING"`` models a capture PayPal is still holding (order COMPLETED, capture PENDING)."""
         with self.lock:
             order = self.orders[order_id]
             order["status"] = "COMPLETED"
-            order["capture"] = {"id": "CAP-OOB-" + uuid.uuid4().hex[:8].upper(), "status": "COMPLETED",
+            order["capture"] = {"id": "CAP-OOB-" + uuid.uuid4().hex[:8].upper(), "status": capture_status,
                                 "amount": dict(order["unit"]["amount"])}
 
     def handle(self, method, path, headers, body):
@@ -133,6 +134,17 @@ class PayPalDouble(_Double):
                 {"href": f"{self.url}/v2/checkout/orders/{order_id}", "rel": "self", "method": "GET"},
                 {"href": f"https://www.sandbox.paypal.com/checkoutnow?token={order_id}", "rel": "approve", "method": "GET"},
                 {"href": f"{self.url}/v2/checkout/orders/{order_id}/capture", "rel": "capture", "method": "POST"}]}
+
+        if path.startswith("/v2/checkout/orders/") and method == "GET":  # order details (used by reconciliation)
+            order_id = path.split("/")[4]
+            with self.lock:
+                order = self.orders.get(order_id)
+                if order is None:
+                    return 404, {"name": "RESOURCE_NOT_FOUND", "details": [{"issue": "INVALID_RESOURCE_ID"}]}
+                unit = {"reference_id": order["unit"]["reference_id"], "amount": order["unit"]["amount"]}
+                if "capture" in order:
+                    unit["payments"] = {"captures": [order["capture"]]}
+                return 200, {"id": order_id, "status": order["status"], "purchase_units": [unit]}
 
         if path.startswith("/v2/checkout/orders/") and path.endswith("/capture"):
             order_id = path.split("/")[4]

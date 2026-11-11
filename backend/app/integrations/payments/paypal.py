@@ -12,6 +12,10 @@ class PayPalSandboxAdapter:
         r.raise_for_status(); return r.json()
     def capture_order(self, order_id):
         r = requests.post(f"{self.config['PAYPAL_BASE_URL']}/v2/checkout/orders/{order_id}/capture", headers={"Authorization": f"Bearer {self._token()}"}, timeout=15); r.raise_for_status(); return r.json()
+    def get_order(self, order_id):
+        """Retrieve authoritative order state after an ambiguous capture timeout."""
+        r = requests.get(f"{self.config['PAYPAL_BASE_URL']}/v2/checkout/orders/{order_id}", headers={"Authorization": f"Bearer {self._token()}"}, timeout=15)
+        r.raise_for_status(); return r.json()
     def verify_webhook(self, headers, body):
         required = ("PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "PAYPAL_WEBHOOK_ID")
         if not all(self.config.get(k) for k in required): return False

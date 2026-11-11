@@ -86,8 +86,10 @@ def create_campaign():
     beneficiary=BeneficiaryProfile.query.get(data.get("beneficiary_id"))
     if not beneficiary: raise ValueError("BENEFICIARY_NOT_FOUND")
     x=Campaign(creator_id=g.current_user.id,beneficiary_id=beneficiary.id,title=title,slug=slug,description=description,category=data["category"],goal_amount=money(data.get("goal_amount")),goal_currency=currency(data.get("goal_currency")))
-    # flush first: x.id is generated at INSERT, and the audit row needs it (NOT NULL resource_id).
-    db.session.add(x); db.session.flush(); db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
+    # Flush first so the generated campaign id exists before the audit row is inserted.
+    # Both writes remain in one transaction and roll back together on failure.
+    db.session.add(x); db.session.flush()
+    db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
 
 @api.patch("/campaigns/<campaign_id>")
 def update_campaign(campaign_id):
@@ -213,6 +215,25 @@ def capture_donation(donation_id):
     captures=unit.get("payments", {}).get("captures", [])
     if not captures or captures[0].get("status") != "COMPLETED": raise ValueError("PAYMENT_NOT_CONFIRMED")
     mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id); db.session.commit()
+    return ok(serialize_donation(donation))
+
+@api.post("/donations/<donation_id>/reconcile")
+def reconcile_donation(donation_id):
+    """Reconcile an ambiguous provider result without issuing a second capture."""
+    donation=Donation.query.get_or_404(donation_id); u=current_user()
+    if donation.donor_id != u.id and u.role not in (Role.admin,Role.reviewer): raise PermissionError("FORBIDDEN")
+    if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
+    if donation.status != DonationStatus.pending or not donation.provider_order_id: raise ValueError("INVALID_DONATION_TRANSITION")
+    result=PayPalSandboxAdapter(current_app.config).get_order(donation.provider_order_id)
+    if result.get("status") == "COMPLETED":
+        unit=(result.get("purchase_units") or [{}])[0]
+        if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
+        captures=(unit.get("payments") or {}).get("captures") or []
+        if not captures: raise ValueError("PAYMENT_NOT_CONFIRMED")
+        mark_donation_completed(donation,order_id=donation.provider_order_id,capture=captures[0],actor_id=u.id)
+        db.session.commit()
+    elif result.get("status") in ("VOIDED", "DENIED"):
+        donation.status=DonationStatus.failed; db.session.commit()
     return ok(serialize_donation(donation))
 
 @api.get("/donations/<donation_id>")
