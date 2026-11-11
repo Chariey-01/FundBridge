@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from app.integrations.ai.base import (
+    AIProviderError,
     AIProviderInvalidOutput,
     AIProviderRefusal,
     AIProviderTimeout,
@@ -115,3 +116,119 @@ def test_factory_modes(monkeypatch):
     assert isinstance(p, OpenAIProvider) and p.model == "m"
     with pytest.raises(ValueError):
         build_ai_provider({"AI_PROVIDER": "other"})
+
+
+# ------------------------------------------------------------------ failure modes over HTTP
+
+
+def counting_provider(handler, *, max_retries=0, model="gpt-test"):
+    calls = {"n": 0}
+
+    def wrapped(request):
+        calls["n"] += 1
+        return handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(wrapped))
+    return OpenAIProvider(api_key="sk-test", model=model, http_client=client, max_retries=max_retries), calls
+
+
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_server_errors_are_retried_then_raise_provider_error(status):
+    provider, calls = counting_provider(lambda r: httpx.Response(status, json={"error": {"message": "boom"}}),
+                                        max_retries=1)
+    with pytest.raises(AIProviderError) as info:
+        provider.generate_structured(REQ)
+    assert not isinstance(info.value, AIProviderUnavailable)
+    assert calls["n"] == 2  # the first attempt plus AI_MAX_RETRIES
+
+
+def test_rate_limit_and_quota_are_unavailable_without_hanging():
+    for body in ({"error": {"message": "Rate limit reached", "type": "requests"}},
+                 {"error": {"message": "You exceeded your current quota", "code": "insufficient_quota"}}):
+        provider, calls = counting_provider(
+            lambda r, b=body: httpx.Response(429, json=b, headers={"retry-after": "30"}), max_retries=0)
+        with pytest.raises(AIProviderUnavailable, match="rate limit or quota"):
+            provider.generate_structured(REQ)
+        assert calls["n"] == 1
+
+
+def test_unknown_model_and_rejected_parameters_name_the_configuration():
+    provider, _ = counting_provider(lambda r: httpx.Response(404, json={"error": {"message": "model not found"}}),
+                                    model="gpt-retired")
+    with pytest.raises(AIProviderUnavailable, match="gpt-retired"):
+        provider.generate_structured(REQ)
+    provider, _ = counting_provider(lambda r: httpx.Response(400, json={"error": {
+        "message": "Unsupported parameter: 'reasoning_effort'", "param": "reasoning_effort"}}))
+    with pytest.raises(AIProviderUnavailable, match="OPENAI_REASONING_EFFORT"):
+        provider.generate_structured(REQ)
+
+
+def test_connection_failure_is_unavailable():
+    def handler(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    provider, _ = counting_provider(handler)
+    with pytest.raises(AIProviderUnavailable):
+        provider.generate_structured(REQ)
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, text="<html>gateway error</html>", headers={"content-type": "text/html"}),
+    httpx.Response(200, text="{not json", headers={"content-type": "application/json"}),
+    httpx.Response(200, json={"unexpected": "shape"}),
+])
+def test_malformed_http_bodies_raise_provider_errors(response):
+    provider, _ = counting_provider(lambda r: response)
+    with pytest.raises(AIProviderError):
+        provider.generate_structured(REQ)
+
+
+@pytest.mark.parametrize("payload, exc", [
+    ({**completion('{"k": "v"}'), "choices": []}, AIProviderInvalidOutput),
+    (completion('{"k": "v"}', finish_reason="content_filter"), AIProviderRefusal),
+    (completion(""), AIProviderInvalidOutput),
+])
+def test_empty_or_filtered_completions(payload, exc):
+    provider, _ = counting_provider(lambda r: httpx.Response(200, json=payload))
+    with pytest.raises(exc):
+        provider.generate_structured(REQ)
+
+
+# ------------------------------------------------------------------ model and reasoning configuration
+
+
+def _sent_body(config):
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json=completion('{"k": "v"}'))
+
+    provider = build_ai_provider({"OPENAI_API_KEY": "sk", **config})
+    provider._client = provider._client.with_options(http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+                                                     max_retries=0)
+    provider.generate_structured(REQ)
+    return provider, seen
+
+
+def test_default_model_is_a_reasoning_model_with_low_effort_and_token_allowance(monkeypatch):
+    for key in ("OPENAI_MODEL", "OPENAI_REASONING_EFFORT", "OPENAI_REASONING_TOKEN_ALLOWANCE"):
+        monkeypatch.delenv(key, raising=False)
+    provider, body = _sent_body({})
+    assert provider.model == "gpt-5.4-mini"
+    assert body["reasoning_effort"] == "low"
+    assert body["max_completion_tokens"] == REQ.max_output_tokens + 1024
+
+
+@pytest.mark.parametrize("config, effort, tokens", [
+    ({"OPENAI_MODEL": "gpt-4o-mini"}, None, 123),                                   # non-reasoning: nothing extra
+    ({"OPENAI_MODEL": "gpt-5.4-mini", "OPENAI_REASONING_EFFORT": "omit"}, None, 123),
+    ({"OPENAI_MODEL": "gpt-5.4-mini", "OPENAI_REASONING_EFFORT": "Minimal"}, "minimal", 123 + 1024),
+    ({"OPENAI_MODEL": "o4-mini", "OPENAI_REASONING_TOKEN_ALLOWANCE": "200"}, "low", 323),
+])
+def test_reasoning_configuration(monkeypatch, config, effort, tokens):
+    for key in ("OPENAI_MODEL", "OPENAI_REASONING_EFFORT", "OPENAI_REASONING_TOKEN_ALLOWANCE"):
+        monkeypatch.delenv(key, raising=False)
+    _, body = _sent_body(config)
+    assert body.get("reasoning_effort") == effort
+    assert body["max_completion_tokens"] == tokens

@@ -136,9 +136,11 @@ export function channelModes(status: IntegrationStatus, payoutProvider: string):
     : status.messaging.ussd.callback_configured
       ? { mode: "sandbox", label: `USSD ${status.messaging.ussd.service_code} (not yet verified on a live network)` }
       : { mode: "unconfigured", label: "USSD not configured" };
-  const ai: ChannelLabel = status.ai.mode === "live"
-    ? { mode: "live", label: "AI suggestions (review before saving)" }
-    : { mode: "fallback", label: "AI unavailable, using templates" };
+  const ai: ChannelLabel = status.ai.mode !== "live"
+    ? { mode: "fallback", label: "AI unavailable, using templates" }
+    : status.ai.last_error && !status.ai.model_verified
+      ? { mode: "fallback", label: "AI not responding, using templates" }
+      : { mode: "live", label: "AI suggestions (review before saving)" };
   const payouts: ChannelLabel = payoutProvider === "simulator"
     ? { mode: "simulated", label: "Payouts are simulated, no money is sent" }
     : { mode: "unconfigured", label: "Payout provider not configured" };

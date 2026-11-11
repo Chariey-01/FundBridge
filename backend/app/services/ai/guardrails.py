@@ -17,9 +17,13 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"(?<!\w)(?<!\d[.,])\+?\d(?:[\s.-]?\d){8,14}(?!\w)(?![.,]\d)")
 # Long digit runs (national ID, account and card numbers) not already caught above.
 _LONG_NUMBER_RE = re.compile(r"(?<!\w)(?<!\d[.,])\d{7,19}(?!\w)(?![.,]\d)")
+# Uppercase alphanumeric references: M-Pesa transaction codes (e.g. QFT4H7K2LP), passport and
+# document numbers (e.g. A1234567). Filtered in _is_reference to spare words like COVID19 or KCSE2025.
+_REF_CANDIDATE_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z0-9]{8,12}(?![A-Za-z0-9])")
+_YEAR_SUFFIX_RE = re.compile(r"^[A-Z]+(?:19|20)\d\d$")
 _URL_RE = re.compile(r"(?i)\b(?:https?://|www\.)[^\s<>\"]+")
 _TAG_RE = re.compile(r"<[^>]{0,500}>")
-_PLACEHOLDER_RE = re.compile(r"\[(?:PHONE|EMAIL|NUMBER)_\d{1,3}\]")
+_PLACEHOLDER_RE = re.compile(r"\[(?:PHONE|EMAIL|NUMBER|REF)_\d{1,3}\]")
 _CONTROL_RE = re.compile(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f​-‏‪-‮⁦-⁩]")
 
 # Statements an AI must never make on its own authority: that money moved,
@@ -63,16 +67,18 @@ _AMOUNT_RE = re.compile(
 
 
 def redact_pii(text: str) -> tuple[str, dict[str, str]]:
-    """Replace e-mail addresses, phone numbers and long digit runs with placeholders.
+    """Replace e-mail addresses, phone numbers, long digit runs and ID/transaction codes with placeholders.
 
     Returns the redacted text and a placeholder -> original mapping. The mapping
     stays on the server; it is only used to restore values after translation.
     """
     mapping: dict[str, str] = {}
-    counters = {"EMAIL": 0, "PHONE": 0, "NUMBER": 0}
+    counters = {"EMAIL": 0, "PHONE": 0, "NUMBER": 0, "REF": 0}
 
-    def _sub(kind: str, pattern: re.Pattern[str], value: str) -> str:
+    def _sub(kind: str, pattern: re.Pattern[str], value: str, keep=None) -> str:
         def repl(match: re.Match[str]) -> str:
+            if keep is not None and keep(match.group(0)):
+                return match.group(0)
             counters[kind] += 1
             key = f"[{kind}_{counters[kind]}]"
             mapping[key] = match.group(0)
@@ -83,7 +89,14 @@ def redact_pii(text: str) -> tuple[str, dict[str, str]]:
     redacted = _sub("EMAIL", _EMAIL_RE, text)
     redacted = _sub("PHONE", _PHONE_RE, redacted)
     redacted = _sub("NUMBER", _LONG_NUMBER_RE, redacted)
+    redacted = _sub("REF", _REF_CANDIDATE_RE, redacted, keep=lambda token: not _is_reference(token))
     return redacted, mapping
+
+
+def _is_reference(token: str) -> bool:
+    digits = sum(c.isdigit() for c in token)
+    letters = len(token) - digits
+    return letters >= 1 and digits >= 3 and not _YEAR_SUFFIX_RE.match(token)
 
 
 def restore_placeholders(text: str, mapping: dict[str, str]) -> tuple[str, list[str]]:

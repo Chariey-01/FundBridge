@@ -4,7 +4,8 @@ Verified against the installed ``openai`` Python SDK (2.x) signature:
 ``client.chat.completions.create(model, messages, response_format,
 max_completion_tokens, store, safety_identifier, timeout)``.
 Not verified against a live account in this repository: no API key was
-available during development. The deterministic fallback in
+available during development. Run ``flask fundbridge-ai check`` with a real key
+to verify the key, the model and these parameters. The deterministic fallback in
 ``app.services.ai`` covers every feature when this provider fails.
 """
 
@@ -38,6 +39,8 @@ class OpenAIProvider:
         max_retries: int = 1,
         base_url: str | None = None,
         http_client: Any | None = None,
+        reasoning_effort: str | None = None,
+        reasoning_token_allowance: int = 0,
     ) -> None:
         if not api_key:
             raise ValueError("OpenAIProvider requires an API key")
@@ -57,6 +60,10 @@ class OpenAIProvider:
             kwargs["http_client"] = http_client
         self._client = openai.OpenAI(**kwargs)
         self.model = model
+        # Reasoning models (GPT-5.x, o-series) spend part of max_completion_tokens on hidden reasoning.
+        # A low effort plus an allowance keeps short structured answers from being truncated.
+        self.reasoning_effort = reasoning_effort or None
+        self.reasoning_token_allowance = max(0, int(reasoning_token_allowance)) if self.reasoning_effort else 0
 
     def generate_structured(self, request: StructuredRequest) -> StructuredResult:
         openai = self._openai
@@ -75,12 +82,14 @@ class OpenAIProvider:
                     "schema": request.json_schema,
                 },
             },
-            "max_completion_tokens": request.max_output_tokens,
+            "max_completion_tokens": request.max_output_tokens + self.reasoning_token_allowance,
             # Do not retain prompts for provider-side features such as evals/distillation.
             "store": False,
         }
         if request.safety_identifier:
             params["safety_identifier"] = request.safety_identifier
+        if self.reasoning_effort:
+            params["reasoning_effort"] = self.reasoning_effort
 
         try:
             completion = self._client.chat.completions.create(**params)
@@ -90,12 +99,25 @@ class OpenAIProvider:
             raise AIProviderUnavailable("OpenAI rejected the configured credentials") from exc
         except openai.RateLimitError as exc:
             raise AIProviderUnavailable("OpenAI rate limit or quota reached") from exc
+        except openai.NotFoundError as exc:
+            raise AIProviderUnavailable(f"OpenAI model '{self.model}' is not available to this account") from exc
+        except openai.BadRequestError as exc:
+            # Usually configuration: a model that rejects reasoning_effort or strict JSON-schema output.
+            raise AIProviderUnavailable(
+                f"OpenAI rejected the request for model '{self.model}' (check OPENAI_MODEL and "
+                "OPENAI_REASONING_EFFORT)"
+            ) from exc
         except openai.APIConnectionError as exc:
             raise AIProviderUnavailable("Could not reach OpenAI") from exc
         except openai.APIError as exc:
+            # Includes 5xx after the SDK's retries.
             raise AIProviderError(f"OpenAI API error ({type(exc).__name__})") from exc
+        except ValueError as exc:  # a 200 whose JSON body is truncated or invalid (json.JSONDecodeError)
+            raise AIProviderInvalidOutput("OpenAI returned a malformed response body") from exc
 
         latency_ms = int((time.monotonic() - started) * 1000)
+        if not hasattr(completion, "choices"):  # a non-JSON 200 (for example a proxy's HTML page)
+            raise AIProviderInvalidOutput("OpenAI returned a response that is not a chat completion")
         if not completion.choices:
             raise AIProviderInvalidOutput("OpenAI returned no choices")
         choice = completion.choices[0]

@@ -53,6 +53,7 @@ def init_integrations(flask_app: Flask) -> None:
     from app.api.v1.operations import init_operations
 
     from .admin_cli import register_admin_cli
+    from .ai_cli import register_ai_cli
     from .demo import register_demo_cli
     from .hardening import init_hardening
 
@@ -60,6 +61,7 @@ def init_integrations(flask_app: Flask) -> None:
     init_operations(flask_app)  # roles, beneficiary verification, campaign balances
     register_demo_cli(flask_app)
     register_admin_cli(flask_app)
+    register_ai_cli(flask_app)
 
     @flask_app.get("/api/v1/integrations/status")
     def integrations_status():

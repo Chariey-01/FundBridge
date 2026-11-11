@@ -88,6 +88,12 @@ class RateLimitedError(Exception):
 InteractionRecorder = Callable[[dict[str, Any]], None]
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _log_interaction(record: dict[str, Any]) -> None:
     log.info("ai_interaction", extra={"ai": record})
 
@@ -113,6 +119,9 @@ class AIService:
         self.catalog = campaign_catalog
         self.config = config or AIConfig()
         self._record = interaction_recorder or _log_interaction
+        # Provider health as observed by this process; "configured" is not "working".
+        self._last_success_at: str | None = None
+        self._last_error: dict[str, str] | None = None
         self._user_limiter = SlidingWindowRateLimiter(self.config.user_rate_limit_per_minute, clock=clock)
         self._public_limiter = SlidingWindowRateLimiter(self.config.public_rate_limit_per_minute, clock=clock)
 
@@ -131,6 +140,10 @@ class AIService:
                 "campaign_search": "ai" if live else "keyword_fallback",
             },
             "supported_languages": SUPPORTED_LANGUAGES,
+            # True only after a real provider call succeeded in this process (not a configuration check).
+            "model_verified": live and self._last_success_at is not None,
+            "last_success_at": self._last_success_at,
+            "last_error": self._last_error,
         }
 
     # ------------------------------------------------------------- rate limits
@@ -387,6 +400,7 @@ class AIService:
             parsed = output_model.model_validate(result.data)
         except ValidationError as exc:
             raise AIProviderInvalidOutput(f"Output failed validation ({exc.error_count()} errors)") from exc
+        self._last_success_at = _now_iso()
         self._record(
             {
                 "feature": feature,
@@ -403,6 +417,7 @@ class AIService:
         configured = self.provider is not None
         if configured:
             log.warning("AI provider failed for %s: %s", feature, exc)
+            self._last_error = {"code": exc.code, "feature": feature, "at": _now_iso()}
         self._record(
             {
                 "feature": feature,

@@ -63,3 +63,15 @@ def test_rate_limiter_window():
     assert limiter.hit("b").allowed
     now[0] = 61
     assert limiter.hit("a").allowed
+
+
+def test_redact_transaction_codes_and_document_numbers():
+    text = "M-Pesa code QFT4H7K2LP, passport A1234567, ref [x] COVID19 KCSE2025 SCHOOL2 FUNDBRIDGE"
+    redacted, mapping = redact_pii(text)
+    assert "QFT4H7K2LP" not in redacted and "A1234567" not in redacted
+    assert sorted(mapping.values()) == ["A1234567", "QFT4H7K2LP"]
+    for kept in ("COVID19", "KCSE2025", "SCHOOL2", "FUNDBRIDGE"):
+        assert kept in redacted
+    restored, missing = restore_placeholders(redacted, mapping)
+    assert restored == text and missing == []
+

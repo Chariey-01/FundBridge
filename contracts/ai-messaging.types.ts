@@ -96,6 +96,10 @@ export interface AIStatus {
   provider: string; model: string | null; mode: "live" | "fallback_only";
   features: Record<"campaign_draft" | "translate" | "beneficiary_assistant" | "campaign_search", string>;
   supported_languages: Record<LanguageCode, string>;
+  /** true only after a real provider call succeeded in this server process; "live" alone means configured */
+  model_verified: boolean;
+  last_success_at: string | null;
+  last_error: { code: string; feature: string; at: string } | null;
 }
 export interface MessagingStatus {
   sms: { provider: string; mode: "simulated" | "africastalking_sandbox" | "africastalking_live"; delivery_confirmed: false };
