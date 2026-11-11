@@ -2,6 +2,8 @@
 
 Base path: `/api/v1`. Responses use `{ "data": ..., "meta": {} }`; failures use the shared `{ "error": { "code", "message", "details" } }` envelope. Resource IDs are UUIDs and money is a decimal string plus uppercase ISO-4217 `currency`.
 
+Authentication failures use HTTP 401 with `AUTH_REQUIRED`, `INVALID_TOKEN`, `TOKEN_EXPIRED`, or `INVALID_CREDENTIALS`; protected-resource authorization failures use HTTP 403. Login does not reveal whether an account exists.
+
 Implemented endpoints: `GET /health`, `GET /api/v1/public/config`, auth register/login/me, campaign browse/detail/create/update/submit/review/current-creator list, assisted beneficiary onboarding, beneficiary self-profile/update, donation order creation/server-side capture/detail/current-donor list, PayPal webhook, payout request/list/detail, and payout review.
 
 `POST /campaigns/{id}/review` accepts `{ "decision": "approve" | "reject" }` for a reviewer/admin. A reviewer cannot review their own campaign. Approval publishes the campaign; rejection returns it to draft. Both decisions are audited.
