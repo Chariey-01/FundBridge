@@ -1,1 +1,122 @@
-<!doctype html><title>FundBridge phone simulator</title><p>Simulator page placeholder.</p>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FundBridge Phone Simulator</title>
+<style>
+  :root { --bg:#f4f1ea; --ink:#1d2321; --muted:#5b6560; --panel:#ffffff; --line:#d9d3c7; --accent:#0f6b4f;
+          --warn-bg:#fff4d6; --warn-ink:#6b4a00; --screen:#cfe3c8; --screen-ink:#13240f; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151918; --ink:#e7ece9; --muted:#9aa5a0; --panel:#1f2523;
+          --line:#323a37; --accent:#5cc8a1; --warn-bg:#3a2f12; --warn-ink:#f3d88a; --screen:#2c3d2a; --screen-ink:#dcf1d4; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:8px 0 4px; }
+  .banner { background:var(--warn-bg); color:var(--warn-ink); border-radius:8px; padding:10px 12px; margin:10px 0 16px; }
+  .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 4px; }
+  input, textarea { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:transparent;
+          color:var(--ink); font:inherit; }
+  .screen { background:var(--screen); color:var(--screen-ink); font-family:ui-monospace, Menlo, monospace; white-space:pre-wrap;
+          border-radius:8px; padding:12px; min-height:150px; margin-top:10px; }
+  .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  button { border:0; border-radius:8px; padding:9px 14px; font:inherit; cursor:pointer; background:var(--accent); color:#fff; }
+  button.secondary { background:transparent; color:var(--ink); border:1px solid var(--line); }
+  .msg { border-bottom:1px solid var(--line); padding:8px 0; font-size:14px; }
+  .msg small { color:var(--muted); display:block; }
+  .muted { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>FundBridge phone simulator</h1>
+  <div class="banner" role="note"><strong>Simulated.</strong> No real SMS or USSD traffic is sent or received. This page
+    drives the same USSD menu and SMS commands that the gateway callbacks use. Do not enable it on a deployment that
+    holds real beneficiary data.</div>
+  <label for="phone">Phone number</label>
+  <input id="phone" value="+254712345678" inputmode="tel" autocomplete="off">
+  <div class="grid" style="margin-top:16px">
+    <section aria-labelledby="ussd-h">
+      <h2 id="ussd-h">USSD session <span class="muted" id="code"></span></h2>
+      <div class="screen" id="ussd-screen" aria-live="polite">Press Dial to start.</div>
+      <label for="ussd-input">Reply</label>
+      <input id="ussd-input" inputmode="numeric" autocomplete="off" disabled>
+      <div class="row">
+        <button id="dial">Dial</button>
+        <button id="send" class="secondary" disabled>Send</button>
+        <button id="hang" class="secondary" disabled>Hang up</button>
+      </div>
+      <p class="muted">Enter 0 to go back, 00 for the main menu.</p>
+    </section>
+    <section aria-labelledby="sms-h">
+      <h2 id="sms-h">SMS</h2>
+      <label for="sms-text">Message to FundBridge</label>
+      <textarea id="sms-text" rows="2" maxlength="480">HELP</textarea>
+      <div class="row"><button id="sms-send">Send SMS</button><button id="refresh" class="secondary">Refresh inbox</button></div>
+      <h2 style="margin-top:14px">Inbox (simulated outbox)</h2>
+      <div id="inbox" aria-live="polite"><p class="muted">No messages yet.</p></div>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+  var base = location.pathname.replace(/\/simulator\/?$/, "");
+  var state = { text: "", session: null };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function post(path, body) {
+    return fetch(base + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); });
+  }
+  function errorText(res) { return (res.body && res.body.error && res.body.error.message) || "Request failed."; }
+
+  function setActive(active) {
+    $("ussd-input").disabled = !active; $("send").disabled = !active; $("hang").disabled = !active;
+    $("dial").disabled = active; if (active) { $("ussd-input").focus(); }
+  }
+  function ussd(text) {
+    post("/simulator/ussd", { phone_number: $("phone").value, text: text, session_id: state.session }).then(function (res) {
+      if (!res.ok) { $("ussd-screen").textContent = errorText(res); setActive(false); return; }
+      $("ussd-screen").textContent = res.body.data.text;
+      setActive(!res.body.data.session_ended);
+      refresh();
+    });
+  }
+  $("dial").onclick = function () { state.text = ""; state.session = "SIM-" + Date.now(); ussd(""); };
+  $("send").onclick = function () {
+    var value = $("ussd-input").value.trim(); if (!value) { return; }
+    state.text = state.text ? state.text + "*" + value : value; $("ussd-input").value = ""; ussd(state.text);
+  };
+  $("ussd-input").addEventListener("keydown", function (e) { if (e.key === "Enter") { $("send").click(); } });
+  $("hang").onclick = function () { setActive(false); $("ussd-screen").textContent = "Session ended."; };
+
+  function refresh() {
+    fetch(base + "/simulator/outbox?phone_number=" + encodeURIComponent($("phone").value))
+      .then(function (r) { return r.json(); }).then(function (j) {
+        var box = $("inbox"); box.textContent = "";
+        if (!j.data || !j.data.length) { box.innerHTML = '<p class="muted">No messages yet.</p>'; return; }
+        j.data.forEach(function (m) {
+          var div = document.createElement("div"); div.className = "msg";
+          var meta = document.createElement("small"); meta.textContent = m.id + " · " + m.status + " · " + m.created_at;
+          var text = document.createElement("div"); text.textContent = m.message;
+          div.appendChild(meta); div.appendChild(text); box.appendChild(div);
+        });
+      });
+  }
+  $("sms-send").onclick = function () {
+    post("/simulator/sms", { phone_number: $("phone").value, text: $("sms-text").value }).then(function (res) {
+      if (!res.ok) { alert(errorText(res)); } refresh();
+    });
+  };
+  $("refresh").onclick = refresh;
+  fetch(base + "/status").then(function (r) { return r.json(); }).then(function (j) {
+    if (j.data && j.data.ussd) { $("code").textContent = "(" + j.data.ussd.service_code + ")"; }
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

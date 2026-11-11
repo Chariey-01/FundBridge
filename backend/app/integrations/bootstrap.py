@@ -32,6 +32,10 @@ def init_integrations(flask_app: Flask) -> None:
     if _flag(flask_app, "MESSAGING_NOTIFICATIONS_ENABLED", True):
         register_notification_hooks()
 
+    from .demo import register_demo_cli
+
+    register_demo_cli(flask_app)
+
     @flask_app.get("/api/v1/integrations/status")
     def integrations_status():
         from app.api.v1.messaging import integration_status

@@ -71,10 +71,11 @@ _WORD_RE = re.compile(r"[a-zA-ZÀ-ÿ]{3,30}")
 def fallback_search_filters(query: str) -> SearchFilters:
     lowered = query.lower()
     category = None
+    best = 0
     for cat, words in _CATEGORY_KEYWORDS.items():
-        if any(re.search(rf"\b{re.escape(w)}", lowered) for w in words):
-            category = cat
-            break
+        hits = sum(1 for w in words if re.search(rf"\b{re.escape(w)}", lowered))
+        if hits > best:
+            category, best = cat, hits
     country = next((code for name, code in _COUNTRIES.items() if name in lowered), None)
     keywords: list[str] = []
     for word in _WORD_RE.findall(lowered):
@@ -109,8 +110,8 @@ def fallback_draft(req: CampaignDraftRequest, redacted_notes: str) -> dict:
         title = f"Help {who} with {label}"
         place = f" from {req.location}" if req.location else ""
         closing = (
-            "Donations are processed through FundBridge. Funds are released to the beneficiary only "
-            "after FundBridge's payout review."
+            "Every donation goes through FundBridge, and FundBridge reviews each payout before releasing it "
+            "to the beneficiary."
         )
         goal_line = f"The goal of this campaign is {req.goal.amount} {req.goal.currency}." if req.goal else ""
         story = "\n\n".join(p for p in (f"This campaign supports {who}{place}.", notes, goal_line, closing) if p)

@@ -279,3 +279,13 @@ def test_ai_code_cannot_reach_financial_modules():
                 if any(part in name.lower() for part in forbidden):
                     offenders.append(f"{path.name}: {name}")
     assert offenders == []
+
+
+def test_template_fallback_does_not_trip_its_own_guardrails(fallback_client):
+    for language in ("en", "sw"):
+        body = {"story_notes": "Juma is a farmer in Kitui. Drought killed his crops and he needs seeds, a water "
+                               "tank and help to replant his farm.", "language": language,
+                "goal": {"amount": "300.00", "currency": "USD"}}
+        data = fallback_client.post("/api/v1/ai/campaign-draft", json=body, headers=AUTH).get_json()["data"]
+        assert data["warnings"] == [], data["warnings"]
+        assert data["suggested_category"] == "agriculture"
