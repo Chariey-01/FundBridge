@@ -9,7 +9,7 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
-from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User)
+from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User, uuid_str)
 from app.security.auth import current_user, roles_allowed
 from app.services.ledger import release_payout, reserve_payout
 from app.services.payments import mark_donation_completed
@@ -158,7 +158,9 @@ def donation_order():
         return ok(serialize_donation(existing))
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
-    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
+    # id is assigned now (not at INSERT) because PayPal must receive it as purchase_units[0].reference_id;
+    # capture later rejects any order whose reference_id is not this donation's id.
+    donation=Donation(id=uuid_str(),campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
     # The provider reference must be the persisted donation id, not a pre-flush None value.
