@@ -81,7 +81,10 @@ def create_campaign():
     beneficiary=BeneficiaryProfile.query.get(data.get("beneficiary_id"))
     if not beneficiary: raise ValueError("BENEFICIARY_NOT_FOUND")
     x=Campaign(creator_id=g.current_user.id,beneficiary_id=beneficiary.id,title=title,slug=slug,description=description,category=data["category"],goal_amount=money(data.get("goal_amount")),goal_currency=currency(data.get("goal_currency")))
-    db.session.add(x); db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
+    # Flush first so the generated campaign id exists before the audit row is inserted.
+    # Both writes remain in one transaction and roll back together on failure.
+    db.session.add(x); db.session.flush()
+    db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
 
 @api.patch("/campaigns/<campaign_id>")
 def update_campaign(campaign_id):
