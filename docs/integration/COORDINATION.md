@@ -5,19 +5,24 @@
 
 | Branch | Owner | Latest known / verified | Notes |
 |---|---|---|---|
-| `feat/backend-core` | Codex | **`7115094`**, merged and verified by this branch's full suite | canonical backend; PR #8 (→ `main`) open |
+| `feat/backend-core` | Codex | **`967781d`** (contains `59120dd`), merged and verified by this branch's full suite | canonical backend; PR #8 (→ `main`) open |
 | `feat/frontend-core` | Cursor | **not on the remote** (checked 2026-11-11 evening with `git ls-remote`; no frontend branch of any name) | nothing could be verified |
 | `feat/ai-integration-qa` | AI, messaging, integration, demo infrastructure | see `git log`; PR **#7** (→ `feat/backend-core`) is open | byte-identical to `feat/backend-core` in every backend-owned file |
-| `main` | maintainer | `6f3c335` | **lacks `b45ee29`..`7115094`**: deploy from `feat/backend-core` until PR #8 is merged |
+| `main` | maintainer | `6f3c335` | **lacks `b45ee29`..`967781d`**: deploy from `feat/backend-core` until PR #8 is merged |
 
 ### Integration blockers, by severity
-1. `main` lacks `b45ee29`..`7115094` (C-4b, X-1, R-2, S-5, X-2, M-1b, M-2 fixes). Owner: maintainer, merging PR #8 (`feat/backend-core` → `main`).
+1. `main` lacks `b45ee29`..`967781d` (C-4b, X-1, R-2, S-5, X-2, M-1b, M-2 fixes; G-6 and G-7). Owner: maintainer, merging PR #8 (`feat/backend-core` → `main`).
 2. The frontend is not published, so no route, payload, loading/error state or "no false success" rule has been checked against Cursor's code, and there is no browser walkthrough (`FRONTEND_WALKTHROUGH.md`). Owner: Cursor.
-3. **G-6** (beneficiary campaign list) and **G-7** (reviewer queue) are missing, which blocks the web beneficiary payout and reviewer screens. Proposed contracts are in `tests/integration/test_proposed_contract_gaps.py`. Owner: Codex. Demo workaround: the campaign IDs the seed prints.
+3. No payout provider: payouts stop at `approved_for_submission`. Owner: project owner (provider choice), then Codex.
 4. Credentials: PayPal sandbox, OpenAI key, Africa's Talking account, shortcode and USSD code, payout provider. Owner: project owner.
 5. Kiswahili wording has not been reviewed by a native speaker: `kiswahili-review.md`. Owner: project owner.
 
 ### Work completed on this branch (most recent first)
+- **AI, feature-phone and product QA round (2026-11-11 night):** full report in `docs/VERIFICATION_REPORT.md`.
+  - Merged `967781d`. G-6/G-7 implemented by Codex as `GET /beneficiaries/me/campaigns` and `GET /campaigns/review-queue`; the proposal xfails are replaced by tests of the real contract, and `contracts/` follows it.
+  - New `POST /api/v1/ai/status-explanation`: an AI explanation of one donation or payout from the backend record, read-only, with the same access as the core GET routes.
+  - Fixed AI-1 (decimal amounts hid claims from the guardrail, High), AI-3 (fallback draft labelled "AI-assisted"), AI-4 (no daily AI cap).
+  - Chained role-journey e2e with a redacted transcript (`docs/evidence/journeys.md`); README rewritten.
 - **Final sprint (2026-11-11 evening):**
   - merged `7115094`; R-2, S-5 and X-2 xfails now pass and are kept as regression tests;
   - fixed an AI guardrail gap: Kiswahili "money moved" claims were only caught in the i- noun class (`imetumwa`), so "malipo yameidhinishwa" or "pesa zimetumwa" passed; now every noun class is covered, with a regression test;
@@ -37,6 +42,7 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 ### Test runs
 | When | Backend commit | Branch commit | Suite | Result |
 |---|---|---|---|---|
+| 2026-11-11 night | `967781d` | `06fc6ab` | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | **313 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 0 xfailed, 0 failed |
 | 2026-11-11 evening | `7115094` | merge `078d215` (before the guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | 285 passed, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 3 failed = the R-2, S-5 and X-2 strict xfails now passing; converted to regression tests, then `tests/e2e` 28/28 and `test_live_found_defects` + `test_migrations` all pass |
 | 2026-11-11 evening | `7115094` | `a1cf9c9` (guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e, including the contracts type-check and live-API client test), gunicorn | **290 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 0 failed |
 | 2026-11-11 evening | `7115094` | merge `078d215` | clean clone → `DEPLOYMENT.md` local setup → `scripts/smoke_test.py` | 21 PASS, 2 SKIP (translation without a key; PayPal order is opt-in), 0 FAIL |
@@ -54,7 +60,7 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 
 ## For Codex (canonical backend)
 
-### Status of every tracked item against `7115094`
+### Status of every tracked item against `967781d`
 
 | ID | Item | Status |
 |---|---|---|
@@ -69,7 +75,9 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 | M-1b | Old global idempotency uniqueness survives upgrade | **Fixed** (e4a6c8d9f012), verified on SQLite and PostgreSQL |
 | M-2 | PostgreSQL full rollback leaves enum types | **Fixed** (7115094), verified on PostgreSQL |
 
-No backend defect found by this branch is open against `7115094`. The sections on R-2 and S-5 below are kept for the record.
+| G-6, G-7 | Beneficiary campaign list; review queue | **Implemented** (967781d) as `/beneficiaries/me/campaigns` and `/campaigns/review-queue`; tested with the seeded demo data |
+
+No backend defect found by this branch is open against `967781d`. One observation (L-4, low): the review queue orders by `created_at`, while its `submitted_at` is `updated_at`, so a campaign resubmitted after rejection keeps its original place. Confirm whether that is intended. The sections on R-2 and S-5 below are kept for the record.
 
 ### R-2 (fixed in 4bae876/7115094): parallel reconciliations returned HTTP 500
 - Where: `backend/app/api/v1/routes.py` `reconcile_donation()`. Two requests both read `pending`, both call `mark_donation_completed`, and the second `db.session.commit()` raises `IntegrityError` (`UniqueViolation` on the ledger credit).
@@ -83,14 +91,9 @@ No backend defect found by this branch is open against `7115094`. The sections o
 - Reproduce: `pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_orders_with_one_key_replay_instead_of_500 --runxfail` (PostgreSQL) → 7 of 8 are 500.
 - Suggestion: on `IntegrityError` at that flush, roll back, re-select by `(donor_id, idempotency_key)`, check the fingerprint, and return the existing donation. The PayPal order created by the losing request is never used.
 
-### API gaps found while reviewing the frontend contract (not defects, missing capabilities)
-Proposed contracts, executable as strict xfails in `tests/integration/test_proposed_contract_gaps.py` (they XPASS when implemented in this shape; adjust them together with `contracts/` if you choose another shape):
-- `GET /api/v1/beneficiaries/me/campaigns` (beneficiary only; 403 for other roles) returns the caller's campaigns in every status, serialized like `GET /campaigns`.
-- `GET /api/v1/campaigns?status=submitted` for reviewers and admins is the review queue. Other callers asking for a non-published status get 401/403. The public listing stays published-only.
-
-- **G-6:** a beneficiary cannot list the campaigns they benefit from. `serialize_campaign` has no `beneficiary_id`, and `/me/campaigns` returns campaigns the user *created*. The web payout-request screen therefore cannot find a `campaign_id`. Suggestion: `GET /beneficiaries/me/campaigns`, or `beneficiary_id` in the campaign payload.
-- **G-7:** there is no reviewer queue; `GET /campaigns` lists only published campaigns. Suggestion: `GET /campaigns?status=submitted` for reviewers and admins.
-- **G-8:** no lookup by `slug`, no pagination beyond 50 results, and no timestamps (`created_at`, `published_at`) in campaign, donation and payout payloads.
+### API gaps (not defects, missing capabilities)
+- **G-6, G-7:** implemented in `967781d` (`GET /beneficiaries/me/campaigns`, `GET /campaigns/review-queue`); tests in `tests/integration/test_beneficiary_and_review_queues.py`.
+- **G-8 (still open, low):** no lookup by `slug`; the public listing stops at 50 results without pagination; donation and payout payloads have no timestamps (`created_at`). Campaign payloads now carry them only on the beneficiary list.
 
 ### Migration chain
 The head is `e4a6c8d9f012` (after the messaging tables, `c3f1a9e7d2b4`). Chain new migrations after it; `test_single_alembic_head` guards this.

@@ -2,7 +2,7 @@
 
 Short and command-first. Details: [`DEPLOYMENT.md`](DEPLOYMENT.md). Provider setup: [`integration/EXTERNAL_CHECKLIST.md`](integration/EXTERNAL_CHECKLIST.md).
 
-**Deploy from `feat/backend-core` at `b45ee29` or later** (or `main` once it contains that commit). Earlier commits cannot create real PayPal orders (C-4b).
+**Deploy from `feat/backend-core` at `967781d` or later** (or `main` once PR #8 is merged). Earlier commits lack the review queue, the beneficiary campaign list and the concurrency fixes; commits before `b45ee29` cannot create real PayPal orders (C-4b).
 
 ## 1. Local (about 5 minutes)
 

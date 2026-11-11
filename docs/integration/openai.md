@@ -1,6 +1,6 @@
 # OpenAI integration: configuration, model decision, safety and verification
 
-OpenAI is FundBridge's initial AI provider. It powers four features: campaign drafting, translation, the beneficiary assistant, and natural-language campaign search. Business code depends only on the `AIProvider` interface (`backend/app/integrations/ai/base.py`). OpenAI is one implementation of it (`openai_provider.py`), so another provider can be added without touching the features.
+OpenAI is FundBridge's initial AI provider. It powers five features: campaign drafting, translation, the beneficiary assistant, natural-language campaign search, and explanations of one donation or payout from FundBridge's own record (`POST /api/v1/ai/status-explanation`). Business code depends only on the `AIProvider` interface (`backend/app/integrations/ai/base.py`). OpenAI is one implementation of it (`openai_provider.py`), so another provider can be added without touching the features.
 
 ## Verification status
 
@@ -12,6 +12,8 @@ OpenAI is FundBridge's initial AI provider. It powers four features: campaign dr
 | Application tests | Real app factory, routes, service and provider; mocked transport. Every failure mode degrades gracefully; a hostile model output changes no database row. | `backend/tests/integration/test_ai_provider_failures.py` |
 | Live HTTP (e2e) | gunicorn serving the app, calling a local OpenAI-compatible double over HTTP | `backend/tests/e2e/test_journeys.py` |
 | **Real OpenAI** | Opt-in; **skipped** until someone provides a key | `backend/tests/ai/test_openai_live.py`, `flask fundbridge-ai check` |
+
+**Live evidence recorded so far: none.** When a key is available, record here: the date, the model returned by `flask fundbridge-ai check`, the result of `FUNDBRIDGE_LIVE_OPENAI_TESTS=1 pytest tests/ai/test_openai_live.py`, and `model_verified: true` from `GET /api/v1/integrations/status`. Never paste the key.
 
 ## Configuration (server-side only)
 
@@ -27,6 +29,7 @@ The key is read only by the backend and never sent to the browser. The frontend 
 | `OPENAI_BASE_URL` | OpenAI | For a proxy or a compatible gateway |
 | `AI_TIMEOUT_SECONDS` / `AI_MAX_RETRIES` | `15` / `1` | Per-request timeout; the SDK retries 5xx, 429 and connection errors |
 | `AI_RATE_LIMIT_PER_MINUTE` / `AI_PUBLIC_RATE_LIMIT_PER_MINUTE` | `10` / `20` | FundBridge's own per-user and per-IP limits (in-process) |
+| `AI_DAILY_REQUEST_LIMIT` | `2000` | Provider calls per UTC day per server process; beyond it the fallbacks answer (`fallback_reason: AI_DAILY_LIMIT_REACHED`). `0` turns the cap off. Also set a monthly budget on the OpenAI project. |
 
 ## Model selection decision (2026-11-11)
 
@@ -58,6 +61,13 @@ FUNDBRIDGE_LIVE_OPENAI_TESTS=1 python -m pytest tests/ai/test_openai_live.py -v 
 - **Assistant:** such claims cause the reply to be replaced entirely.
 - **Search:** results always come from the database catalog. The model only proposes filters and cannot invent campaigns.
 - **Translation:** placeholders are restored after translation.
+- **Status explanation:** the model receives only facts from the record (status, amount, campaign title, confirmed campaign total) and FundBridge's verified wording. It gets no names of people, phone numbers, e-mail addresses, donation, payout or PayPal IDs. It rewords that text in English or Kiswahili, or translates it for the other 11 languages. The output is replaced by the verified text if it:
+  - changes an amount, or adds a link or contact detail;
+  - claims money moved or was approved when the record does not say so (negation-aware, English and Kiswahili);
+  - says a confirmed donation means the beneficiary was paid;
+  - describes a confirmed record as failed.
+
+  The response's `status`, `amount` and `confirmed` fields always come from the record, never from the model. For languages other than English and Kiswahili, the claim checks cannot read the text; only the amount, link and contact checks apply, and the verified English text is returned alongside.
 
 **No authority.** The provider has no tools, no function calling and no database access. The AI service holds only a read-only campaign catalog. It cannot change donations, the ledger, payouts, beneficiary verification, roles or campaign status, or start a transfer. Two tests enforce this: a static import test (`test_ai_code_cannot_reach_financial_modules`) and a database snapshot test (`test_adversarial_prompts_and_hostile_outputs_change_nothing`). Drafts are suggestions; the user saves them through the normal campaign endpoints.
 
@@ -68,11 +78,14 @@ FUNDBRIDGE_LIVE_OPENAI_TESTS=1 python -m pytest tests/ai/test_openai_live.py -v 
 | OpenAI condition | Draft | Assistant | Search | Translate | `meta` |
 |---|---|---|---|---|---|
 | No key / disabled | template | rule-based | keyword | `503 AI_UNAVAILABLE` | `provider: fallback`, `degraded: false` |
+| Daily cap reached | same | same | same | 503 | `degraded: true`, `fallback_reason: AI_DAILY_LIMIT_REACHED` |
 | Timeout | template | rule-based | keyword | 503 | `degraded: true`, `fallback_reason: AI_PROVIDER_TIMEOUT` |
 | 429 rate limit or quota, 401, 404 model, 400 parameter, connection error | same | same | same | 503 | `AI_PROVIDER_UNAVAILABLE` |
 | 5xx after retries | same | same | same | 503 | `AI_PROVIDER_ERROR` |
 | Malformed body, non-JSON content, schema violation, truncation | same | same | same | 503 | `AI_INVALID_OUTPUT` |
 | Refusal or content filter | same | same | same | 503 | `AI_PROVIDER_REFUSAL` |
 | FundBridge's own limit | `429 RATE_LIMITED` with `Retry-After` | | | | |
+
+Every fallback also says so in words, not just in `meta`: the template draft's `disclaimer` starts "AI is unavailable, so this is a template…", the assistant's `notice` starts "AI is unavailable, so this is a standard answer", search returns a `notice`, and a status explanation returns FundBridge's standard explanation with a notice. Status explanations fall back to the verified text (English or Kiswahili) and are never unavailable.
 
 SMS and USSD never depend on AI. Only free-text SMS uses the assistant, and it falls back to rule-based replies.
