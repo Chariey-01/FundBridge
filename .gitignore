@@ -14,7 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Do not ignore `lib/`: it may contain legitimate application source.
 lib64/
 parts/
 sdist/
@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -204,6 +206,18 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# Node / frontend build artefacts (source directories must remain trackable)
+node_modules/
+.npm/
+.yarn/
+.next/
+coverage/
+
+# Local secrets and provider credentials
+*.pem
+*.key
+secrets/
 
 # Ruff stuff:
 .ruff_cache/
