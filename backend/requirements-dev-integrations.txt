@@ -1,0 +1,2 @@
+-r requirements-integrations.txt
+pytest>=8,<9
