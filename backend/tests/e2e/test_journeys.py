@@ -243,6 +243,17 @@ def test_reconcile_after_provider_side_capture_completes_donation_once(live):
     _err(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", stranger["token"]), 403, "FORBIDDEN")
 
 
+def test_reconcile_with_declined_capture_marks_donation_failed(live):
+    """feat/backend-core 9d3f80c: a DECLINED capture found by reconciliation is final; nothing is credited."""
+    world = _published_campaign(live, title_word="Declined")
+    donor = live.account("donor")
+    donation, order_id = _donate(live, donor, world["campaign"]["id"], "7.00", capture=False)
+    live.paypal.capture_out_of_band(order_id, capture_status="DECLINED")
+    assert _ok(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", donor["token"]))["status"] == "failed"
+    assert _ok(live.call("GET", f"/api/v1/donations/{donation['id']}", donor["token"]))["status"] == "failed"
+    assert _funds(live, world["campaign"]["id"])["raised"] == "0.00"
+
+
 def test_reconcile_before_capture_leaves_donation_pending(live):
     world = _published_campaign(live, title_word="Sports")
     donor = live.account("donor")

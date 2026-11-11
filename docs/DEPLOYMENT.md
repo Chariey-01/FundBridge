@@ -61,12 +61,14 @@ Generate secrets with `python3 -c "import secrets; print(secrets.token_urlsafe(3
 
 ## Provider configuration
 
+Step-by-step verification and evidence for every provider: [`docs/integration/EXTERNAL_CHECKLIST.md`](integration/EXTERNAL_CHECKLIST.md).
+
 ### PayPal (sandbox)
 1. developer.paypal.com → Apps & Credentials → Sandbox → create an app → copy the client ID and secret.
 2. Add a webhook for `https://<backend-host>/api/v1/webhooks/paypal` with event `PAYMENT.CAPTURE.COMPLETED`, then copy its ID into `PAYPAL_WEBHOOK_ID`.
-3. Keep `PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com`.
+3. Keep `PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com`. Known blocker: order creation fails against PayPal's default response until open item C-4b is fixed (see `COORDINATION.md`).
 4. Pay with a sandbox personal account. The frontend calls `POST /donations/{id}/capture` on return, then trusts only `GET /donations/{id}` (see `FundBridgeClient.completePayPalReturn`).
-5. Configure the webhook even if capture-on-return works. If a capture times out, the payment may already be captured at PayPal; a retried capture then gets `ORDER_ALREADY_CAPTURED`, and only the webhook moves the donation to `completed` (open item R-1 in `docs/integration/COORDINATION.md`).
+5. Configure the webhook even if capture-on-return works. If a capture times out, the payment may already be captured at PayPal: `POST /donations/{id}/reconcile` (the client calls it automatically) reads the order from PayPal and credits a verified capture once, and the webhook does the same independently.
 
 ### Africa's Talking
 Requirements, callback URLs, the step-by-step sandbox and live test procedure, and what is still unverified: [`docs/integration/africastalking.md`](integration/africastalking.md). Quick checks: `flask fundbridge-messaging check-config --api-host https://<backend-host>` (no network) and `flask fundbridge-messaging send-test --to +254...` (one real SMS).

@@ -154,8 +154,9 @@ export function channelModes(status: IntegrationStatus, payoutProvider: string):
   return { sms, ussd, ai, payouts };
 }
 
-/** Outcome of returning from PayPal. Only "confirmed" may be shown as a successful donation. */
-export type PayPalReturnOutcome = "confirmed" | "not_approved" | "provider_unavailable" | "needs_review" | "pending";
+/** Outcome of returning from PayPal. Only "confirmed" may be shown as a successful donation; "failed" means the
+ * server recorded the payment as not completed (a new donation is needed). */
+export type PayPalReturnOutcome = "confirmed" | "failed" | "not_approved" | "provider_unavailable" | "needs_review" | "pending";
 
 // ------------------------------------------------------------------ client
 
@@ -276,7 +277,9 @@ export class FundBridgeClient {
     }
     const donation = await this.getDonation(donationId);
     if (donation.status === "completed") outcome = "confirmed";
-    else if (outcome === "pending" && presentDonation(donation.status).final) outcome = "needs_review";
+    // The server decided: PayPal declined/denied the capture or the order was cancelled (reconciliation, 9d3f80c).
+    else if (donation.status === "failed" || donation.status === "cancelled") outcome = "failed";
+    else if (presentDonation(donation.status).final) outcome = "needs_review";
     return { outcome, donation, presentation: presentDonation(donation.status), error: failure };
   }
 

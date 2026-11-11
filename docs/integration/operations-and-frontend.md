@@ -2,7 +2,7 @@
 
 For whoever builds the web frontend. It covers the endpoints added on `feat/ai-integration-qa` (roles, beneficiary verification, balances, search, hardening) and how each screen should use the API. Core endpoints are in `backend/API_CONTRACT.md`; AI and SMS/USSD endpoints are in `ai-messaging-api.md`.
 
-Use `contracts/fundbridge-client.ts`. It is typed, framework-agnostic and tested against the live API (`backend/tests/e2e/test_frontend_client.py`). `contracts/examples.ts` has type-checked integration patterns for every screen below. `cd contracts && npm ci && npm test` type-checks the client, the contracts and the examples (`tsc --strict`) and runs the offline tests.
+Use `contracts/fundbridge-client.ts` (consumption steps: `contracts/README.md`). It is typed, framework-agnostic and tested against the live API (`backend/tests/e2e/test_frontend_client.py`). `contracts/examples.ts` has type-checked integration patterns for every screen below. `cd contracts && npm ci && npm test` type-checks the client, the contracts and the examples (`tsc --strict`) and runs the offline tests.
 
 ## Rules every screen must follow
 
@@ -23,6 +23,7 @@ Use `contracts/fundbridge-client.ts`. It is typed, framework-agnostic and tested
 | Donation return outcome `not_approved` | "Payment not completed at PayPal", plus "Return to PayPal" | Failure of the donation itself (it is still pending) |
 | Outcome `provider_unavailable` | "PayPal is not responding; we will keep checking", plus re-check | "Payment failed" or "Payment succeeded" |
 | Outcome `needs_review` | "We could not confirm this payment; support will check", with the request ID | Success |
+| Outcome `failed` (server status `failed`/`cancelled`, e.g. PayPal declined the capture) | "Payment not completed", plus "Donate again" (a new donation with a new idempotency key) | Success, or "still checking" |
 | Donation `completed` | "Donation confirmed" (success) | |
 | Payout `requested`/`under_review`/`approved_for_submission`/`submitted`/`pending_confirmation` | The label from `presentPayout`, in a pending style | "Paid", "Sent" or "Received" |
 | Payout `rejected`/`failed` | The failure label; the reserved funds are back in `available` | |
@@ -73,7 +74,7 @@ Use `contracts/fundbridge-client.ts`. It is typed, framework-agnostic and tested
 | 429 | `RATE_LIMITED` | `Retry-After` header and `details.retry_after_seconds` |
 | 502 | `PROVIDER_REQUEST_REJECTED` | PayPal refused (`details.provider_status`, `details.provider_issue`, e.g. `ORDER_NOT_APPROVED`) |
 | 503 | `PROVIDER_UNAVAILABLE` | PayPal unreachable or timed out; the donation may or may not have been captured, so reconcile and re-read it |
-| 400 | `PAYMENT_NOT_CONFIRMED` (from reconcile) | PayPal holds the capture (pending); keep showing pending. Open item R-1b: this should be a 200 pending |
+| 400 | `PAYMENT_ORDER_MISMATCH` (from create order) | The provider's order does not match the donation. Open item C-4b: currently returned for every real PayPal order |
 | 405 | `METHOD_NOT_ALLOWED` | Envelope instead of HTML |
 | 500 | `INTERNAL_ERROR` | `details.request_id` for support |
 

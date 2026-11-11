@@ -91,6 +91,17 @@ test("a timeout is reconciled; a failed reconcile leaves the donation pending, n
   assert.equal(result.presentation.tone, "pending");
 });
 
+test("a reconcile that records a declined capture is reported as failed, not as still checking", async () => {
+  const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
+    "POST /api/v1/donations/d1/capture": { status: 503, body: { error: { code: "PROVIDER_UNAVAILABLE", message: "x", details: {} } } },
+    "POST /api/v1/donations/d1/reconcile": donation("failed"),
+    "GET /api/v1/donations/d1": donation("failed"),
+  }) });
+  const result = await client.completePayPalReturn("d1");
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.presentation.tone, "failure");
+});
+
 test("an expired session triggers onSessionInvalid once and throws", async () => {
   const calls: string[] = [];
   const client = new FundBridgeClient({ baseUrl: "http://api", token: "old",
