@@ -80,6 +80,21 @@ def test_destination_change_requires_reverification(app, client):
     r=client.patch("/api/v1/beneficiaries/me",headers={"Authorization":f"Bearer {auth}"},json={"payout_destination_reference":"new-token"})
     assert r.status_code == 200 and r.json["data"]["verification_status"] == "reverification_required"
 
+def test_phone_change_requires_reverification(app, client):
+    with app.app_context():
+        user=User(email="phone-change@test",role=Role.beneficiary); db.session.add(user); db.session.flush()
+        profile=BeneficiaryProfile(user_id=user.id,display_name="Verified",phone_number="+254700000010",country_code="KE",verification_status="verified"); db.session.add(profile); db.session.commit(); auth=token(app,user)
+    response=client.patch("/api/v1/beneficiaries/me",headers={"Authorization":f"Bearer {auth}"},json={"phone_number":"+254700000011"})
+    assert response.status_code == 200 and response.json["data"]["verification_status"] == "reverification_required"
+    with app.app_context():
+        assert BeneficiaryProfile.query.filter_by(phone_number="+254700000011").one().verification_status == "reverification_required"
+
+def test_campaign_keyword_search_returns_published_matches(app, client):
+    with app.app_context():
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Clean water project",slug="clean-water-project",description="Clean water for a village",category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.commit(); campaign_id=c.id
+    response=client.get("/api/v1/campaigns?q=water")
+    assert response.status_code == 200 and [x["id"] for x in response.json["data"]] == [campaign_id]
+
 def test_paypal_reconciliation_is_authoritative_and_idempotent(app, client):
     with app.app_context():
         user=User(email="reconcile@test",role=Role.donor); db.session.add(user); db.session.flush()

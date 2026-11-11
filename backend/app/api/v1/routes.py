@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, current_app, g, jsonify, request
 from flask_jwt_extended import create_access_token
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 
 from app.extensions import db
 from app.integrations.payments.paypal import PayPalSandboxAdapter
@@ -63,6 +64,9 @@ def me():
 def list_campaigns():
     q=Campaign.query.filter_by(status=CampaignStatus.published)
     if request.args.get("category"): q=q.filter_by(category=request.args["category"])
+    if request.args.get("q"):
+        term=f"%{request.args['q'].strip()}%"
+        q=q.filter(or_(Campaign.title.ilike(term), Campaign.description.ilike(term), Campaign.category.ilike(term)))
     return ok([serialize_campaign(x) for x in q.order_by(Campaign.published_at.desc()).limit(50)])
 
 @api.get("/campaigns/<campaign_id>")
@@ -130,7 +134,9 @@ def assisted_beneficiary():
         if not linked_user or linked_user.status != "active" or linked_user.role != Role.beneficiary: raise ValueError("BENEFICIARY_ACCOUNT_NOT_ELIGIBLE")
         if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
     x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
-    db.session.add(x); db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
+    db.session.add(x); db.session.flush()
+    db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id))
+    db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
 
 @api.post("/donations/orders")
 def donation_order():
@@ -192,16 +198,16 @@ def update_beneficiary_me():
     x=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
     if not x: raise ValueError("BENEFICIARY_NOT_FOUND")
     data=body()
-    for key in ("display_name","phone_number","preferred_language"):
+    for key in ("display_name","preferred_language"):
         if key in data and isinstance(data[key],str) and data[key].strip(): setattr(x,key,data[key].strip())
+    if "phone_number" in data and data["phone_number"] != x.phone_number:
+        if not isinstance(data["phone_number"],str) or not data["phone_number"].strip(): raise ValueError("VALIDATION_ERROR")
+        x.phone_number=data["phone_number"].strip(); x.verification_status="reverification_required"
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.phone_changed",resource_type="beneficiary",resource_id=x.id))
     if "payout_destination_reference" in data and data["payout_destination_reference"] != x.payout_destination_reference:
         if not isinstance(data["payout_destination_reference"],str) or not data["payout_destination_reference"]: raise ValueError("VALIDATION_ERROR")
         x.payout_destination_reference=data["payout_destination_reference"]; x.verification_status="reverification_required"
         db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.payout_destination_changed",resource_type="beneficiary",resource_id=x.id))
-    if "phone_number" in data and data["phone_number"] != x.phone_number:
-        if not isinstance(data["phone_number"],str) or not data["phone_number"]: raise ValueError("VALIDATION_ERROR")
-        x.phone_number=data["phone_number"]; x.verification_status="reverification_required"
-        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.phone_changed",resource_type="beneficiary",resource_id=x.id))
     db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status})
 
 @api.post("/donations/<donation_id>/capture")
