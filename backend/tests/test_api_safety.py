@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from flask_jwt_extended import create_access_token
 from app.extensions import db
-from app.models.core import BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus, ProviderWebhookEvent, Role, User
+from app.models.core import AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus, ProviderWebhookEvent, Role, User
 
 def token(app, user):
     with app.app_context(): return create_access_token(identity=user.id)
@@ -88,6 +88,15 @@ def test_phone_change_requires_reverification(app, client):
     assert response.status_code == 200 and response.json["data"]["verification_status"] == "reverification_required"
     with app.app_context():
         assert BeneficiaryProfile.query.filter_by(phone_number="+254700000011").one().verification_status == "reverification_required"
+
+def test_beneficiary_onboarding_writes_one_audit_record(app, client):
+    with app.app_context():
+        admin=User(email="onboard-admin@test",role=Role.admin); db.session.add(admin); db.session.commit(); auth=token(app,admin)
+    response=client.post("/api/v1/beneficiaries",headers={"Authorization":f"Bearer {auth}"},json={"display_name":"New beneficiary","phone_number":"+254700000012","country_code":"KE"})
+    assert response.status_code == 201
+    beneficiary_id=response.json["data"]["id"]
+    with app.app_context():
+        assert AuditLog.query.filter_by(action="beneficiary.onboarded",resource_id=beneficiary_id).count() == 1
 
 def test_campaign_keyword_search_returns_published_matches(app, client):
     with app.app_context():

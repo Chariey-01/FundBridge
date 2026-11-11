@@ -8,7 +8,7 @@ class PayPalSandboxAdapter:
         r = requests.post(f"{self.config['PAYPAL_BASE_URL']}/v1/oauth2/token", auth=(self.config['PAYPAL_CLIENT_ID'], self.config['PAYPAL_CLIENT_SECRET']), data={"grant_type": "client_credentials"}, timeout=10)
         r.raise_for_status(); return r.json()["access_token"]
     def create_order(self, donation, return_url, cancel_url):
-        r = requests.post(f"{self.config['PAYPAL_BASE_URL']}/v2/checkout/orders", headers={"Authorization": f"Bearer {self._token()}"}, json={"intent": "CAPTURE", "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": donation.currency, "value": str(donation.amount)}}], "application_context": {"return_url": return_url, "cancel_url": cancel_url}}, timeout=15)
+        r = requests.post(f"{self.config['PAYPAL_BASE_URL']}/v2/checkout/orders", headers={"Authorization": f"Bearer {self._token()}", "Prefer": "return=representation"}, json={"intent": "CAPTURE", "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": donation.currency, "value": str(donation.amount)}}], "application_context": {"return_url": return_url, "cancel_url": cancel_url}}, timeout=15)
         r.raise_for_status(); return r.json()
     def capture_order(self, order_id):
         r = requests.post(f"{self.config['PAYPAL_BASE_URL']}/v2/checkout/orders/{order_id}/capture", headers={"Authorization": f"Bearer {self._token()}"}, timeout=15); r.raise_for_status(); return r.json()
