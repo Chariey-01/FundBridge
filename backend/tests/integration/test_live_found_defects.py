@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 import sqlalchemy.exc
 
 from app.models.core import AuditLog, Campaign, User
@@ -30,6 +32,10 @@ def test_creator_can_create_campaign_through_the_api(client, seeded):
     assert AuditLog.query.filter_by(action="campaign.created", resource_id=campaign_id).count() == 1
 
 
+@pytest.mark.xfail(strict=True, reason="DEFECT X-1 (merge artifact in feat/backend-core 6fd76b3): assisted_beneficiary() "
+                                       "writes beneficiary.onboarded twice because both the integration-branch fix and the "
+                                       "ported fix (3edf6c4) survived the PR #3 merge (routes.py, lines after the profile "
+                                       "is created); each onboarding leaves two audit rows")
 def test_assisted_onboarding_is_audited(client, seeded):
     res = client.post("/api/v1/beneficiaries", headers=auth(client, "agent@example.test"),
                       json={"display_name": "Otieno", "phone_number": "+254711222333", "country_code": "KE"})
@@ -54,9 +60,7 @@ def test_unhandled_database_error_log_omits_sql_parameters(client, seeded, monke
     assert "+254799887766" not in text and "private@example.test" not in text
 
 
-def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monkeypatch):
-    """C-4: the PayPal order was created before the donation had an id, so reference_id was None and
-    every later capture failed the reference_id == donation.id check (PAYMENT_ORDER_MISMATCH)."""
+def _order_through(client, seeded, monkeypatch, response_for):
     from flask import current_app
 
     from app.integrations.payments import paypal
@@ -65,11 +69,44 @@ def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monke
 
     def create_order(self, donation, return_url, cancel_url):
         sent["reference_id"] = donation.id
-        return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}]}
+        return response_for(donation)
 
     monkeypatch.setattr(paypal.PayPalSandboxAdapter, "create_order", create_order)
     current_app.config["PAYPAL_CLIENT_ID"] = "sandbox-client"
     res = client.post("/api/v1/donations/orders", headers={**auth(client, "creator@example.test"), "Idempotency-Key": "r1"},
                       json={"campaign_id": seeded["campaign"].id, "amount": "10.00", "currency": "USD"})
-    assert res.status_code == 201
+    return res, sent
+
+
+def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monkeypatch):
+    """C-4: the PayPal order was created before the donation had an id, so reference_id was None and every capture
+    failed the reference check. Fixed in feat/backend-core b7bf45b (flush before the provider call)."""
+    def representation(donation):  # what PayPal returns with "Prefer: return=representation"
+        return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}],
+                "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": "USD", "value": "10.00"}}]}
+
+    res, sent = _order_through(client, seeded, monkeypatch, representation)
+    assert res.status_code == 201, res.get_json()
     assert sent["reference_id"] and sent["reference_id"] == res.get_json()["data"]["id"]
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT C-4b: PayPal's create-order default (Prefer: return=minimal) returns only "
+                                       "id, status and links; b7bf45b requires purchase_units in that response and the "
+                                       "adapter does not request return=representation, so real orders fail with 400 "
+                                       "PAYMENT_ORDER_MISMATCH")
+def test_paypal_default_minimal_create_order_response_is_accepted(client, seeded, monkeypatch):
+    def minimal(donation):
+        return {"id": "ORDER-MIN-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}]}
+
+    res, _ = _order_through(client, seeded, monkeypatch, minimal)
+    assert res.status_code == 201, res.get_json()
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT X-2 (merge artifact in feat/backend-core 6fd76b3): list_campaigns() applies "
+                                       "two ?q= filters (the escaped title/description one and the ported title/description/"
+                                       "category one) joined with AND, so the ported category match never returns anything")
+def test_keyword_search_matches_category_as_ported(client, seeded):
+    # The seeded campaign is category "education"; neither its title nor description contains that word.
+    res = client.get("/api/v1/campaigns?q=education")
+    assert [c["title"] for c in res.get_json()["data"]] == ["School fees for Amina"]
+

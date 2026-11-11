@@ -100,6 +100,7 @@ def _start_stack(tmp: Path, db_url: str, extra_env: dict | None = None):
     if db_url.startswith("postgresql"):
         _reset_postgres(db_url)
     paypal = PayPalDouble("e2e-paypal-client", "e2e-paypal-secret", "WH-E2E-0001").start()
+    paypal.assume_representation = True  # C-4b accommodation; see PayPalDouble and COORDINATION.md
     openai_key = "sk-e2e-" + secrets.token_hex(8)
     openai = OpenAIDouble(openai_key).start()
     port = _free_port()
