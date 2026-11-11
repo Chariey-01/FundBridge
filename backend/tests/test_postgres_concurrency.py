@@ -20,13 +20,13 @@ def test_two_simultaneous_reservations_cannot_overcommit():
         creator=User(email="concurrency-creator@test",role=Role.creator); beneficiary_user=User(email="concurrency-beneficiary@test",role=Role.beneficiary); db.session.add_all([creator,beneficiary_user]); db.session.flush()
         beneficiary=BeneficiaryProfile(user_id=beneficiary_user.id,display_name="Concurrency beneficiary",phone_number="+254700000099",country_code="KE",verification_status="verified",payout_destination_reference="token"); db.session.add(beneficiary); db.session.flush()
         c=Campaign(creator_id=creator.id,beneficiary_id=beneficiary.id,title="Concurrency campaign",slug="postgres-concurrency",description="x"*20,category="health",goal_amount=Decimal("20"),goal_currency="USD",status=CampaignStatus.published)
-        db.session.add(c); db.session.flush(); db.session.add(FinancialLedgerEntry(campaign_id=c.id,entry_type="donation_completed",amount=Decimal("100"),currency="USD",reference="seed-credit")); db.session.commit(); campaign_id=c.id; beneficiary_id=beneficiary.id
+        db.session.add(c); db.session.flush(); db.session.add(FinancialLedgerEntry(campaign_id=c.id,entry_type="donation_completed",amount=Decimal("100"),currency="USD",reference="seed-credit")); db.session.commit(); campaign_id=c.id; beneficiary_id=beneficiary.id; requester_id=beneficiary_user.id  # read ids before the session closes; threads must not touch detached instances
     results=[]; barrier=threading.Barrier(2)
     def reserve(key):
         with app.app_context():
             try:
                 barrier.wait(); c=db.session.query(Campaign).filter_by(id=campaign_id).with_for_update().one()
-                p=Payout(campaign_id=c.id,beneficiary_id=beneficiary_id,requested_by=beneficiary_user.id,amount=Decimal("60"),currency="USD",destination_type="wallet",destination_reference="token",provider="simulator",idempotency_key=key,idempotency_fingerprint=key,status=PayoutStatus.requested)
+                p=Payout(campaign_id=c.id,beneficiary_id=beneficiary_id,requested_by=requester_id,amount=Decimal("60"),currency="USD",destination_type="wallet",destination_reference="token",provider="simulator",idempotency_key=key,idempotency_fingerprint=key,status=PayoutStatus.requested)
                 db.session.add(p); db.session.flush(); reserve_payout(p); db.session.commit(); results.append("reserved")
             except ValueError: db.session.rollback(); results.append("rejected")
             finally: db.session.remove()

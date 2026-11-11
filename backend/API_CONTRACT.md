@@ -19,3 +19,13 @@ Assisted onboarding is implemented for an agent/admin. It may link only an exist
 Testing: the PostgreSQL reservation-concurrency test is included and runs only when `POSTGRES_TEST_DATABASE_URL` names an isolated test database. It is deliberately skipped for SQLite because SQLite cannot validate `FOR UPDATE` locking behavior.
 
 The repository CI workflow provisions PostgreSQL and sets `POSTGRES_TEST_DATABASE_URL`, so pull requests run the reservation-concurrency test against PostgreSQL. It has not yet passed in CI until GitHub Actions reports a successful run.
+
+## Addendum: integration branch (`feat/ai-integration-qa`, PR #3)
+
+PR #3 adds the following on top of this contract. Details are in `docs/integration/operations-and-frontend.md` and `docs/integration/ai-messaging-api.md`.
+
+- AI (`/api/v1/ai/*`), SMS/USSD gateway callbacks and simulator (`/api/v1/messaging/*`), and `GET /api/v1/integrations/status`.
+- Role assignment by an admin (`GET /admin/users`, `PUT /admin/users/{id}/role`) and the first-admin CLI `flask fundbridge-admin create-admin`.
+- Beneficiary verification by a reviewer or admin (`GET /beneficiaries`, `GET /beneficiaries/{id}`, `POST /beneficiaries/{id}/verification` with a `revision` that guards against stale reviews).
+- `GET /campaigns/{id}/funds` (ledger-backed balances) and `GET /campaigns?q=` (keyword search).
+- Uniform error envelopes for 405, 500 (`INTERNAL_ERROR` with `request_id`), provider failures (`502 PROVIDER_REQUEST_REJECTED`, `503 PROVIDER_UNAVAILABLE`) and rate limits (`429 RATE_LIMITED`). `X-Request-ID` is on every response.
