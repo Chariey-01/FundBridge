@@ -63,6 +63,11 @@ def me():
 def list_campaigns():
     q=Campaign.query.filter_by(status=CampaignStatus.published)
     if request.args.get("category"): q=q.filter_by(category=request.args["category"])
+    # Plain keyword search (no AI dependency): case-insensitive match on title or description.
+    term=(request.args.get("q") or "").strip()[:100]
+    if term:
+        pattern="%"+term.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
+        q=q.filter(Campaign.title.ilike(pattern,escape="\\") | Campaign.description.ilike(pattern,escape="\\"))
     return ok([serialize_campaign(x) for x in q.order_by(Campaign.published_at.desc()).limit(50)])
 
 @api.get("/campaigns/<campaign_id>")

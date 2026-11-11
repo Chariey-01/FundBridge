@@ -1,4 +1,4 @@
-"""Single entry point that wires AI and messaging into the core Flask app.
+"""Single entry point that wires AI, messaging and operational hardening into the core Flask app.
 
 Called once from ``create_app``:
 
@@ -50,9 +50,16 @@ def init_integrations(flask_app: Flask) -> None:
     if _flag(flask_app, "MESSAGING_NOTIFICATIONS_ENABLED", True):
         register_notification_hooks()
 
-    from .demo import register_demo_cli
+    from app.api.v1.operations import init_operations
 
+    from .admin_cli import register_admin_cli
+    from .demo import register_demo_cli
+    from .hardening import init_hardening
+
+    init_hardening(flask_app)  # request IDs, access log, sign-in rate limits, JSON error envelopes
+    init_operations(flask_app)  # roles, beneficiary verification, campaign balances
     register_demo_cli(flask_app)
+    register_admin_cli(flask_app)
 
     @flask_app.get("/api/v1/integrations/status")
     def integrations_status():
