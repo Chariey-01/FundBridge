@@ -1,4 +1,4 @@
-import re
+import re, hashlib, json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from flask import Blueprint, current_app, g, jsonify, request
@@ -30,6 +30,7 @@ def money(value):
 def currency(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Z]{3}", value): raise ValueError("VALIDATION_ERROR")
     return value
+def fingerprint(value): return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",":"), default=str).encode()).hexdigest()
 def serialize_campaign(x): return {"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
 def serialize_donation(x): return {"id":x.id,"campaign_id":x.campaign_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 def serialize_payout(x): return {"id":x.id,"campaign_id":x.campaign_id,"beneficiary_id":x.beneficiary_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
@@ -135,11 +136,14 @@ def donation_order():
     donor=current_user()
     data=body(); key=request.headers.get("Idempotency-Key")
     if not key: raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
-    existing=Donation.query.filter_by(idempotency_key=key).first()
-    if existing: return ok(serialize_donation(existing))
+    request_fingerprint=fingerprint({"campaign_id":data.get("campaign_id"),"amount":data.get("amount"),"currency":data.get("currency"),"provider":"paypal"})
+    existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
+    if existing:
+        if existing.idempotency_fingerprint != request_fingerprint: raise ValueError("IDEMPOTENCY_KEY_REUSED")
+        return ok(serialize_donation(existing))
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
-    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,status=DonationStatus.pending)
+    donation=Donation(campaign_id=campaign.id,donor_id=donor.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),provider="paypal",idempotency_key=key,idempotency_fingerprint=request_fingerprint,status=DonationStatus.pending)
     adapter=PayPalSandboxAdapter(current_app.config)
     if not current_app.config.get("PAYPAL_CLIENT_ID"): raise ValueError("PAYMENT_PROVIDER_UNCONFIGURED")
     order=adapter.create_order(donation,data.get("return_url",""),data.get("cancel_url","")); donation.provider_order_id=order["id"]
@@ -178,6 +182,10 @@ def update_beneficiary_me():
         if not isinstance(data["payout_destination_reference"],str) or not data["payout_destination_reference"]: raise ValueError("VALIDATION_ERROR")
         x.payout_destination_reference=data["payout_destination_reference"]; x.verification_status="reverification_required"
         db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.payout_destination_changed",resource_type="beneficiary",resource_id=x.id))
+    if "phone_number" in data and data["phone_number"] != x.phone_number:
+        if not isinstance(data["phone_number"],str) or not data["phone_number"]: raise ValueError("VALIDATION_ERROR")
+        x.phone_number=data["phone_number"]; x.verification_status="reverification_required"
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.phone_changed",resource_type="beneficiary",resource_id=x.id))
     db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status})
 
 @api.post("/donations/<donation_id>/capture")
@@ -213,15 +221,18 @@ def my_donations():
 def request_payout():
     data=body(); key=request.headers.get("Idempotency-Key")
     if not key: raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
-    existing=Payout.query.filter_by(idempotency_key=key).first()
-    if existing: return ok(serialize_payout(existing))
+    request_fingerprint=fingerprint({"campaign_id":data.get("campaign_id"),"beneficiary_id":data.get("beneficiary_id"),"amount":data.get("amount"),"currency":data.get("currency"),"destination_type":data.get("destination_type","wallet")})
+    existing=Payout.query.filter_by(requested_by=g.current_user.id,idempotency_key=key).first()
+    if existing:
+        if existing.idempotency_fingerprint != request_fingerprint: raise ValueError("IDEMPOTENCY_KEY_REUSED")
+        return ok(serialize_payout(existing))
     campaign=Campaign.query.get(data.get("campaign_id")); beneficiary=BeneficiaryProfile.query.get(data.get("beneficiary_id"))
     if not campaign or not beneficiary or campaign.beneficiary_id != beneficiary.id: raise ValueError("VALIDATION_ERROR")
     if g.current_user.role == Role.beneficiary and beneficiary.user_id != g.current_user.id: raise PermissionError("FORBIDDEN")
     if beneficiary.verification_status != "verified": raise ValueError("BENEFICIARY_NOT_VERIFIED")
     # row lock serializes reservations for this campaign on PostgreSQL.
     db.session.query(Campaign).filter_by(id=campaign.id).with_for_update().one()
-    p=Payout(campaign_id=campaign.id,beneficiary_id=beneficiary.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),destination_type=data.get("destination_type","wallet"),destination_reference=beneficiary.payout_destination_reference or "",provider=current_app.config["PAYOUT_PROVIDER"],idempotency_key=key)
+    p=Payout(campaign_id=campaign.id,beneficiary_id=beneficiary.id,requested_by=g.current_user.id,amount=money(data.get("amount")),currency=currency(data.get("currency")),destination_type=data.get("destination_type","wallet"),destination_reference=beneficiary.payout_destination_reference or "",provider=current_app.config["PAYOUT_PROVIDER"],idempotency_key=key,idempotency_fingerprint=request_fingerprint)
     if not p.destination_reference: raise ValueError("PAYOUT_DESTINATION_UNVERIFIED")
     db.session.add(p); db.session.flush(); reserve_payout(p); db.session.add(AuditLog(actor_id=g.current_user.id,action="payout.requested",resource_type="payout",resource_id=p.id)); db.session.commit(); return ok(serialize_payout(p),201)
 
@@ -230,6 +241,7 @@ def request_payout():
 def review_payout(payout_id):
     p=Payout.query.get_or_404(payout_id); data=body(); decision=data.get("decision")
     if p.status != PayoutStatus.requested: raise ValueError("INVALID_PAYOUT_TRANSITION")
+    if p.requested_by == g.current_user.id: raise PermissionError("SELF_APPROVAL_FORBIDDEN")
     if decision == "reject": p.status=PayoutStatus.rejected; release_payout(p,"rejected")
     elif decision == "approve": p.status=PayoutStatus.approved_for_submission
     else: raise ValueError("VALIDATION_ERROR")

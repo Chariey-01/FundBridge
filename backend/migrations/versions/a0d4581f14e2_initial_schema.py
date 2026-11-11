@@ -98,7 +98,6 @@ def upgrade():
     sa.ForeignKeyConstraint(['campaign_id'], ['campaign.id'], ),
     sa.ForeignKeyConstraint(['donor_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('idempotency_key'),
     sa.UniqueConstraint('provider_capture_id'),
     sa.UniqueConstraint('provider_order_id')
     )
@@ -126,7 +125,6 @@ def upgrade():
     sa.ForeignKeyConstraint(['beneficiary_id'], ['beneficiary_profile.id'], ),
     sa.ForeignKeyConstraint(['campaign_id'], ['campaign.id'], ),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('idempotency_key'),
     sa.UniqueConstraint('provider_reference')
     )
     with op.batch_alter_table('payout', schema=None) as batch_op:

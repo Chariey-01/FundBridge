@@ -46,3 +46,12 @@ def test_donation_to_ledger_to_payout_failure_lifecycle(app):
         assert available_funds(c.id,"USD") == Decimal("0.00")
         apply_provider_status(p,"FAILED",failure_reason="provider_reconciled_failure"); db.session.commit()
         assert available_funds(c.id,"USD") == Decimal("12.00")
+
+def test_same_idempotency_key_isolated_between_actors(app):
+    with app.app_context():
+        c=Campaign(creator_id="creator",beneficiary_id="beneficiary",title="Scoped campaign",slug="scoped-campaign",description="x"*20,category="health",goal_amount=Decimal("100"),goal_currency="USD",status=CampaignStatus.published); db.session.add(c); db.session.flush()
+        first=Donation(campaign_id=c.id,donor_id="donor-a",amount=Decimal("1"),currency="USD",provider="paypal",idempotency_key="same-key",idempotency_fingerprint="a"); second=Donation(campaign_id=c.id,donor_id="donor-b",amount=Decimal("2"),currency="USD",provider="paypal",idempotency_key="same-key",idempotency_fingerprint="b"); db.session.add_all([first,second]); db.session.commit()
+        assert Donation.query.filter_by(idempotency_key="same-key").count() == 2
+        p1=Payout(campaign_id=c.id,beneficiary_id="beneficiary",requested_by="admin-a",amount=Decimal("1"),currency="USD",destination_type="wallet",destination_reference="one",provider="simulator",idempotency_key="payout-key",idempotency_fingerprint="one")
+        p2=Payout(campaign_id=c.id,beneficiary_id="beneficiary",requested_by="admin-b",amount=Decimal("1"),currency="USD",destination_type="wallet",destination_reference="two",provider="simulator",idempotency_key="payout-key",idempotency_fingerprint="two"); db.session.add_all([p1,p2]); db.session.commit()
+        assert Payout.query.filter_by(idempotency_key="payout-key").count() == 2
