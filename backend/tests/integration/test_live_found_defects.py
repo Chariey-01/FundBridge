@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 
-
 import sqlalchemy.exc
 
 from app.models.core import AuditLog, Campaign, User
@@ -93,4 +92,3 @@ def test_keyword_search_matches_category_as_ported(client, seeded):
     # The seeded campaign is category "education"; neither its title nor description contains that word.
     res = client.get("/api/v1/campaigns?q=education")
     assert [c["title"] for c in res.get_json()["data"]] == ["School fees for Amina"]
-
