@@ -5,10 +5,10 @@
 
 | Branch | Owner | Latest known / verified | Notes |
 |---|---|---|---|
-| `feat/backend-core` | Codex | **`967781d`** (contains `59120dd`), merged and verified by this branch's full suite | canonical backend; PR #8 (→ `main`) open |
+| `feat/backend-core` | Codex | **`782b7b5`**, merged and verified by this branch's full suite | canonical backend; PR #8 (→ `main`) open, **conflicting** in `backend/tests/integration/test_live_found_defects.py`; merging PR #7 first resolves it |
 | `feat/frontend-core` | Cursor | **not on the remote** (checked 2026-11-11 evening with `git ls-remote`; no frontend branch of any name) | nothing could be verified |
 | `feat/ai-integration-qa` | AI, messaging, integration, demo infrastructure | see `git log`; PR **#7** (→ `feat/backend-core`) is open | byte-identical to `feat/backend-core` in every backend-owned file |
-| `main` | maintainer | `6f3c335` | **lacks `b45ee29`..`967781d`**: deploy from `feat/backend-core` until PR #8 is merged |
+| `main` | maintainer | `6f3c335` | **lacks `b45ee29`..`782b7b5`**: deploy from `feat/backend-core` until PR #8 is merged |
 
 ### Integration blockers, by severity
 1. `main` lacks `b45ee29`..`967781d` (C-4b, X-1, R-2, S-5, X-2, M-1b, M-2 fixes; G-6 and G-7). Owner: maintainer, merging PR #8 (`feat/backend-core` → `main`).
@@ -42,6 +42,7 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 ### Test runs
 | When | Backend commit | Branch commit | Suite | Result |
 |---|---|---|---|---|
+| 2026-11-12 | `782b7b5` | `11343c9` | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn; `contracts` npm test; release probe | **315 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 0 failed; contracts 11/11; probe 55/55 |
 | 2026-11-11 night | `967781d` | `06fc6ab` | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | **313 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 0 xfailed, 0 failed |
 | 2026-11-11 evening | `7115094` | merge `078d215` (before the guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | 285 passed, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 3 failed = the R-2, S-5 and X-2 strict xfails now passing; converted to regression tests, then `tests/e2e` 28/28 and `test_live_found_defects` + `test_migrations` all pass |
 | 2026-11-11 evening | `7115094` | `a1cf9c9` (guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e, including the contracts type-check and live-API client test), gunicorn | **290 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 0 failed |

@@ -168,11 +168,11 @@ Accessibility:
 
 | Suite | Commit | Result |
 |---|---|---|
-__FINAL__
+| `pytest tests`: unit, integration, migrations, PostgreSQL 16 concurrency, e2e on gunicorn with PostgreSQL (includes the TypeScript client against the live API and the contracts type-check) | `11343c9` (contains `782b7b5`; later commits are docs only) | **315 passed, 5 skipped, 0 failed, 0 xfailed.** Skipped: 4 opt-in real-OpenAI tests (no key) and 1 SQLite diagnostic |
+| `contracts`: `npm test` (tsc --strict and offline tests) | `11343c9` | type-check passes, 11/11 |
 | `pytest tests` on the merge of `782b7b5` (before the MSG-1 fix) | `70241e8` | 314 passed, 5 skipped, 0 failed |
 | Release probe against a real server (`backend/scripts/release_probe.py`): gunicorn with `FLASK_ENV=production`, PostgreSQL, the OpenAI double, a simulated outbox, then an unreachable Africa's Talking URL | MSG-1 fix applied | **55 passed, 0 failed** ([`evidence/release-probe.md`](evidence/release-probe.md)) |
-| `pytest tests`: unit, integration, migrations, PostgreSQL 16 concurrency, e2e on gunicorn with PostgreSQL (includes the TypeScript client against the live API and the contracts type-check) | `06fc6ab` | **313 passed, 5 skipped, 0 failed, 0 xfailed.** Skipped: 4 opt-in real-OpenAI tests and 1 SQLite diagnostic |
-| `contracts`: `npm test` (tsc --strict and offline tests) | `06fc6ab` | type-check passes, 11/11 |
+| Earlier: `pytest tests` (same scope) | `06fc6ab` (backend `967781d`) | 313 passed, 5 skipped, 0 failed |
 | Clean clone, then the `DEPLOYMENT.md` local setup, then `scripts/smoke_test.py` | `078d215` (earlier today) | 21 PASS, 2 SKIP (translation without a key; PayPal order is opt-in), 0 FAIL |
 
 **Live provider tests run: none.** All AI tests used a mocked HTTP transport or the OpenAI double. All PayPal and
