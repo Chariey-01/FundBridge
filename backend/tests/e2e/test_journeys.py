@@ -252,6 +252,7 @@ def test_reconcile_before_capture_leaves_donation_pending(live):
 
 
 def test_reconcile_with_pending_capture_stays_pending(live):
+    """Was DEFECT R-1b (400 PAYMENT_NOT_CONFIRMED); fixed in feat/backend-core b7bf45b."""
     world = _published_campaign(live, title_word="Held")
     donor = live.account("donor")
     donation, order_id = _donate(live, donor, world["campaign"]["id"], "6.00", capture=False)
@@ -409,3 +410,20 @@ def test_server_logs_hold_no_secrets_or_phone_numbers(live):
         assert secret not in log, f"secret material in server log: {secret[:6]}..."
     assert "+25471" not in log, "phone number in server log"
     assert "unhandled error" not in log, "a journey hit an unhandled server error"
+
+
+@pytest.mark.xfail(strict=True, reason="DEFECT C-4b: PayPal's create-order returns a minimal body (id, status, links) "
+                                       "unless the request sends 'Prefer: return=representation'; the canonical adapter "
+                                       "does not send it but b7bf45b requires purchase_units in the response, so every "
+                                       "real order fails with 400 PAYMENT_ORDER_MISMATCH")
+def test_order_creation_against_paypal_default_response(live):
+    world = _published_campaign(live, title_word="Minimal")
+    donor = live.account("donor")
+    live.paypal.assume_representation = False  # behave exactly like PayPal's default
+    try:
+        res = live.call("POST", "/api/v1/donations/orders", donor["token"], headers={"Idempotency-Key": uuid.uuid4().hex},
+                        json={"campaign_id": world["campaign"]["id"], "amount": "5.00", "currency": "USD"})
+    finally:
+        live.paypal.assume_representation = True
+    assert res.status_code == 201, res.text
+
