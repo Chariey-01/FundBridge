@@ -57,7 +57,7 @@ Generate secrets with `python3 -c "import secrets; print(secrets.token_urlsafe(3
 | `FRONTEND_ORIGIN` | yes | The only origin allowed by CORS |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID`, `PAYPAL_BASE_URL` | for donations | Without the client ID, donation orders return `PAYMENT_PROVIDER_UNCONFIGURED` |
 | `PAYOUT_PROVIDER` | no | `simulator` (only option today) |
-| `MESSAGING_CALLBACK_TOKEN` | for SMS/USSD | Shared secret on gateway callbacks; callbacks return 503 without it |
+| `MESSAGING_CALLBACK_TOKEN` | for SMS/USSD | Shared secret on gateway callbacks, at least 24 random characters; callbacks return 503 without it or when it is shorter |
 | `SMS_PROVIDER`, `AT_USERNAME`, `AT_API_KEY`, `AT_SENDER_ID`, `USSD_SERVICE_CODE`, `MESSAGING_*`, `PUBLIC_BASE_URL` | for SMS/USSD | Validate with `flask fundbridge-messaging check-config`. Keep `PUBLIC_BASE_URL` short: it appears on 182-character USSD screens. |
 | `AI_PROVIDER`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT`, `OPENAI_REASONING_TOKEN_ALLOWANCE`, `AI_*` | no | AI runs in fallback mode without a key. Model decision: `docs/integration/openai.md` |
 | `TRUSTED_PROXY_HOPS` | behind a proxy | Number of proxy hops to trust for the client IP (rate limits, callback allowlist) |

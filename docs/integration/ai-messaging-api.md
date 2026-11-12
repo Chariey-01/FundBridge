@@ -132,7 +132,7 @@ Same as `data.ai` in `/integrations/status`.
 
 Retries are safe: an inbound SMS with an `id` already processed gets no second reply; a repeated USSD PIN step (same `sessionId` and `text`) is not counted as another wrong attempt; repeated help requests within 30 minutes return the same reference. Gateway setup and testing: `africastalking.md`.
 
-The token can also be sent as `X-FundBridge-Callback-Token`. A wrong token returns `403 INVALID_CALLBACK`; no configured token returns `503 MESSAGING_NOT_CONFIGURED`.
+The token can also be sent as `X-FundBridge-Callback-Token`. A wrong token returns `403 INVALID_CALLBACK`; no configured token, or one shorter than 24 characters, returns `503 MESSAGING_NOT_CONFIGURED`.
 
 Every screen is GSM 7-bit text of at most 182 characters (long titles are shortened; search may show fewer than three results). Options 1 and 2 answer only numbers on a **verified** beneficiary profile; after a phone or payout-destination change the number gets "waiting for verification, contact your agent" until a reviewer re-verifies it.
 

@@ -86,6 +86,22 @@ def test_callbacks_fail_closed_without_configured_token(make_app):
     assert res.get_json()["error"]["code"] == "MESSAGING_NOT_CONFIGURED"
 
 
+def test_callbacks_refuse_a_guessable_token(make_app, caplog):
+    """Regression: check-config rejected tokens under 24 characters, but the running app accepted them, so a weak
+    secret let anyone forge USSD/SMS callbacks for any phone number."""
+    weak = "letmein"
+    client = make_app(MESSAGING_CALLBACK_TOKEN=weak).test_client()
+    for path in ("/api/v1/messaging/ussd", "/api/v1/messaging/sms/inbound", "/api/v1/messaging/sms/delivery"):
+        res = client.post(f"{path}?token={weak}", data={"phoneNumber": BENEFICIARY_PHONE, "from": BENEFICIARY_PHONE,
+                                                         "text": "", "id": "x", "status": "Success"})
+        assert res.status_code == 503 and res.get_json()["error"]["code"] == "MESSAGING_NOT_CONFIGURED", path
+    assert "shorter than 24 characters" in caplog.text and weak not in caplog.text
+    status = client.get("/api/v1/integrations/status").get_json()["data"]["messaging"]["ussd"]
+    assert status["callback_configured"] is False
+    assert make_app(MESSAGING_CALLBACK_TOKEN="x" * 24).test_client().post(
+        f"/api/v1/messaging/ussd?token={'x' * 24}", data={"phoneNumber": BENEFICIARY_PHONE, "text": ""}).status_code == 200
+
+
 def test_ip_allowlist(make_app):
     client = make_app(MESSAGING_ALLOWED_IPS="10.0.0.0/8").test_client()
     assert ussd(client, "").status_code == 403  # test client is 127.0.0.1

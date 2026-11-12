@@ -13,6 +13,15 @@ import hmac
 import ipaddress
 
 
+# The shared secret is the only proof that a callback came from the gateway (Africa's Talking does not sign
+# them), so a guessable value must never be accepted. Same rule as `flask fundbridge-messaging check-config`.
+MIN_CALLBACK_TOKEN_LENGTH = 24
+
+
+def token_is_strong(token: str | None) -> bool:
+    return bool(token) and len(token) >= MIN_CALLBACK_TOKEN_LENGTH
+
+
 def token_matches(expected: str | None, supplied: str | None) -> bool:
     if not expected or not supplied:
         return False

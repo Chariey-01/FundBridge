@@ -1,49 +1,56 @@
 # FundBridge verification report: AI, feature phones and end-to-end product QA
 
-**Date:** 2026-11-11. **Branch:** `feat/ai-integration-qa`, code verified at `06fc6ab` (later commits change only docs and the generated evidence file). It contains `feat/backend-core`
-`967781d`, which includes `59120dd`. **Frontend:** no Cursor branch exists on the remote, so no web UI was verified.
+**Updated:** 2026-11-12 (final release verification). **Branch:** `feat/ai-integration-qa`; see the final commit in
+PR #7. It contains `feat/backend-core` **`782b7b5`** (the migration-logging fix) and everything before it.
+**Frontend:** no Cursor branch exists on the remote, so no web UI was verified.
 
-Every claim below points to a test or to the evidence transcript [`evidence/journeys.md`](evidence/journeys.md).
+Every claim below points to a test or to an evidence file:
+- [`evidence/journeys.md`](evidence/journeys.md): role journeys over HTTP;
+- [`evidence/release-probe.md`](evidence/release-probe.md): 55 AI and feature-phone checks against a real server.
+
 "Double" means a local stand-in for a provider's HTTP API (`backend/tests/e2e/provider_doubles.py`). A double proves
 FundBridge's side of the integration, never the provider's live behaviour.
 
-## Verdict
+## Verdict: PASS WITH LIMITATIONS (hackathon demonstration)
 
 | Question | Answer |
 |---|---|
-| Ready for the recorded demonstration? | **Yes, for the backend, AI (with fallbacks) and the phone simulator, all with simulation labelled.** Not for the web UI until Cursor publishes it. A real PayPal sandbox payment and a real OpenAI call each need the owner's credentials (about 30 minutes each; see owner actions). |
+| Safe, integrated and ready for the recorded demonstration? | **Yes, with limitations.** The backend, all five AI features (with provider doubles and with fallbacks), USSD and SMS through the Africa's Talking callback format, and the labelled phone simulator all pass against the latest backend. Limitations: the web UI is unpublished (Cursor), and no live OpenAI, PayPal or Africa's Talking request has been made. A real PayPal sandbox payment and a real OpenAI call each need the owner's credentials (about 30 minutes each). |
 | Ready for a real production launch? | **No.** There is no payout provider (payouts stop at "approved"), no live PayPal, no approved Africa's Talking sender ID, shortcode or USSD code, no verified OpenAI model, no published frontend, and no native-speaker review of the Kiswahili. Codex's [`BACKEND_RELEASE_READINESS.md`](BACKEND_RELEASE_READINESS.md) adds: no refund, reversal or dispute handling; no token revocation or refresh; no backups, restore drill or monitoring; and a shared rate-limit store is needed for more than one worker. The compliance questions (KYC/AML for payouts, data protection) are open. |
 
 ## Feature matrix
 
-Legend: **Tested** = implemented and tested end to end over HTTP against the real FundBridge server. **Mocked** =
-implemented; the provider side is tested only with mocks or doubles. **Credentials** = needs live credentials.
-**Approval** = needs a human or provider approval. **Not implemented**. **Failed** = failed verification.
+The verification levels:
+- **Implemented:** the code exists and its own logic is tested.
+- **Double:** also tested over HTTP against the real FundBridge server with a local provider stand-in.
+- **Live:** tested against the real provider.
+- **Not implemented.**
 
-| Feature | Status | Evidence | Who must do what |
-|---|---|---|---|
-| Registration, sign-in, roles, lockout | Tested | `test_registration_and_authentication`, `test_auth_parity`, `test_hardening` | none |
-| Beneficiary onboarding, verification, reverification on phone/destination change | Tested | `test_beneficiary_onboarding_and_reverification`, `test_phone_channel_verification` | none |
-| Campaign create, submit, review (paginated queue), publish, audit | Tested | `test_role_journeys_end_to_end`, `test_beneficiary_and_review_queues` | none |
-| Beneficiary's own campaign list (G-6) | Tested | same | none |
-| PayPal donation: order, approve, capture, webhook, reconcile, ledger | Mocked, needs Credentials | e2e against a PayPal Orders v2 double; signed and forged webhooks; replay credited once | **Owner:** PayPal sandbox app (`PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`), webhook ID, one sandbox payment recorded in `EXTERNAL_CHECKLIST.md` |
-| Ledger totals, reservations, concurrency | Tested | PostgreSQL: 8 parallel payouts → 1 reserved; parallel reconciles and orders without 500s | none |
-| Payout request and review, no self-approval | Tested (simulator) | `test_payout_request_review_reservation_and_tracking` | none |
-| Payout submission to mobile money, settlement, "paid" | **Not implemented** | stops at `approved_for_submission` by design | **Owner:** choose a licensed provider (for example Daraja B2C or an aggregator) and sign its contract. **Codex:** submission and callback endpoints |
-| AI campaign draft | Mocked, needs Credentials | mocked transport, OpenAI double, PII redaction checked on the wire | **Owner:** `OPENAI_API_KEY`, then `flask fundbridge-ai check` |
-| AI translation | Mocked, needs Credentials | same; 503 without a model, and the original text is kept | same |
-| AI beneficiary assistant (web and SMS free text) | Mocked, needs Credentials | same; hostile outputs replaced | same |
-| AI campaign search | Mocked, needs Credentials | same; results only from the database | same |
-| AI status explanation (new) | Mocked, needs Credentials | `test_status_explanation` (real provider class, mocked transport), e2e | same |
-| AI deterministic fallbacks | Tested | every feature with no key and with each failure type | none |
-| USSD menus, PIN, lockout, admin reset (English and Kiswahili) | Tested via HTTP callbacks (Africa's Talking format); **not on a telco** | e2e and `test_feature_phone_hardening` | **Owner:** Africa's Talking account; sandbox USSD channel, then a production service code (**Approval:** telco) |
-| SMS commands, notifications after commit, delivery reports | Mocked (Africa's Talking double), simulator | `test_africastalking_journeys`, notification tests | **Owner:** Africa's Talking API key; for production, KYC and a sender ID or shortcode (**Approval**) |
-| Callback secret, IP allowlist, retry safety | Tested | `test_ussd_callback_requires_token`, `test_retried_inbound_sms_is_processed_once` | **Owner:** Africa's Talking callback IP list for `MESSAGING_ALLOWED_IPS` |
-| Kiswahili wording | **Approval** | `integration/kiswahili-review.md` | **Owner:** native-speaker review, especially money and PIN text |
-| Web frontend journeys and screenshots | **Not verifiable** | no branch | **Cursor:** publish the frontend; run `integration/FRONTEND_WALKTHROUGH.md` |
-| Live SMS delivery, live USSD session, live OpenAI, live PayPal | **Not verified** | no credentials were available | see owner actions |
+**No feature has a "Live" result: no credentials were available.**
 
-No feature failed verification on this run. Three defects were found and fixed during this audit (below).
+| Feature | Implemented | Double | Live | Evidence | Who must do what |
+|---|---|---|---|---|---|
+| Registration, sign-in, roles, lockout | yes | n/a (no provider) | n/a | `test_registration_and_authentication`, `test_auth_parity`, `test_hardening` | none |
+| Beneficiary onboarding, verification, reverification on phone/destination change | yes | n/a | n/a | `test_beneficiary_onboarding_and_reverification`, `test_phone_channel_verification` | none |
+| Campaign create, submit, review (paginated queue), publish, audit | yes | n/a | n/a | journeys, `test_beneficiary_and_review_queues` | none |
+| PayPal donation: order, approve, capture, webhook, reconcile, ledger | yes | **yes** (PayPal Orders v2 double; signed and forged webhooks; replay credited once) | **no** | journeys, `test_journeys` | **Owner:** PayPal sandbox app and webhook ID; one sandbox payment recorded in `EXTERNAL_CHECKLIST.md` |
+| Ledger totals, reservations, concurrency | yes | n/a | n/a | PostgreSQL concurrency suites | none |
+| Payout request and review, no self-approval | yes (simulator provider) | n/a | n/a | `test_payout_request_review_reservation_and_tracking` | none |
+| Payout submission, settlement, "paid" | **not implemented** | | | stops at `approved_for_submission` by design | **Owner:** licensed payout provider and contract. **Codex:** submission and callback endpoints |
+| AI campaign draft | yes | **yes** (probe: PII redaction on the wire, injection, hostile output) | **no** | `release-probe.md`, `test_ai_api`, `test_ai_provider_failures` | **Owner:** `OPENAI_API_KEY`, then `flask fundbridge-ai check` |
+| AI translation | yes | **yes** | **no** | same; 503 without a model, original kept | same |
+| AI beneficiary assistant (web and SMS free text) | yes | **yes** (invented payout confirmation replaced) | **no** | same | same |
+| AI campaign search | yes | **yes** (results only from the database) | **no** | same | same |
+| AI status explanation | yes | **yes** (invented confirmations replaced; access matches the core routes) | **no** | `test_status_explanation`, probe | same |
+| AI fallbacks, attribution, rate limit, daily cap | yes | **yes** (provider double failing; cap reached at exactly 40 calls) | n/a | probe, `test_fallback_honesty_and_limits` | none |
+| USSD menus, PIN, lockout, admin reset (English and Kiswahili) | yes | **yes** (Africa's Talking callback format over HTTP) | **no** (no telco session) | probe, e2e, `test_feature_phone_hardening` | **Owner:** Africa's Talking account; sandbox USSD channel, then a production service code (telco approval) |
+| SMS commands, notifications after commit, delivery reports | yes | **yes** (Africa's Talking double; simulated outbox) | **no** | `test_africastalking_journeys`, probe | **Owner:** API key; for production, KYC and a sender ID or shortcode (approval) |
+| Messaging unavailable | yes | **yes** (unreachable Africa's Talking: USSD, payout review and inbound SMS keep working) | n/a | probe, `test_africastalking_outage_never_breaks_callbacks_or_payouts` | none |
+| Callback secret (24+ characters), IP allowlist, retry safety | yes (**weak-secret defect fixed today**) | **yes** | n/a | probe, `test_callbacks_refuse_a_guessable_token` | **Owner:** Africa's Talking callback IP list for `MESSAGING_ALLOWED_IPS` |
+| Kiswahili wording | yes | n/a | n/a | `integration/kiswahili-review.md` (regenerated and matches the code) | **Owner:** native-speaker review, especially money and PIN text |
+| Web frontend journeys and screenshots | **not in the repository** | | | no branch | **Cursor:** publish the frontend; run `integration/FRONTEND_WALKTHROUGH.md` |
+
+No feature failed verification. Five defects were found and fixed across these audits (below).
 
 ## Phase 1: AI audit
 
@@ -124,7 +131,7 @@ Screenshots: none. There is no frontend to capture, and the evidence is the HTTP
 
 ## Phase 5: defects
 
-Found in this audit (all in Claude-owned AI code, all fixed, each with a regression test):
+Found in these audits (all in Claude-owned AI and messaging code, all fixed, each with a regression test):
 
 | ID | Severity | Defect | Reproduction | Expected | Actual (before the fix) | Fixed in |
 |---|---|---|---|---|---|---|
@@ -132,6 +139,7 @@ Found in this audit (all in Claude-owned AI code, all fixed, each with a regress
 | AI-2 | **High** | Kiswahili claims were detected in only one noun class | `find_unsafe_claims("Malipo yako yameidhinishwa.")` | flagged | `[]` (also "pesa zimetumwa", "malipo yamelipwa") | `a1cf9c9`; `test_kiswahili_completion_claims_in_every_noun_class` |
 | AI-3 | Low | The template draft was labelled "AI-assisted" when AI was unavailable | `POST /ai/campaign-draft` with no key | says AI is unavailable | "AI-assisted draft…" | `07bb6a0`; `test_template_draft_does_not_call_itself_ai` |
 | AI-4 | Medium | No overall cap on provider calls; public endpoints could run up cost | many IPs at 20 requests/min each | a bounded daily spend | unbounded | `07bb6a0`; `AI_DAILY_REQUEST_LIMIT` |
+| MSG-1 | Medium | The running app accepted a guessable callback secret. `check-config` flagged tokens under 24 characters, but callbacks still worked with them, so anyone could forge USSD/SMS callbacks for any number (read campaign status, opt a number out with STOP, flood support requests; payout status stays behind the PIN) | `MESSAGING_CALLBACK_TOKEN=letmein`, then `POST /api/v1/messaging/ussd?token=letmein` | refused (503 `MESSAGING_NOT_CONFIGURED`), error logged without the token, `callback_configured: false` | 200 `CON FundBridge…` | 2026-11-12; `test_callbacks_refuse_a_guessable_token` |
 
 Open items (no critical defect is open in code that can be tested here):
 
@@ -141,6 +149,7 @@ Open items (no critical defect is open in code that can be tested here):
 | L-2 | Low | Status-explanation claim checks understand English and Kiswahili only. Other languages rely on the amount, link and contact checks, the status fields taken from the record, and the verified English text returned alongside | Claude, after native-speaker input |
 | L-3 | Low | AI input redaction does not detect personal names or street addresses (the forms ask only for a first name and a general location) | documented |
 | L-4 | Low | The review queue is ordered by creation time, but its `submitted_at` is the last update. A campaign resubmitted after rejection keeps its original place | Codex (by design?) |
+| L-5 | Low (by design) | Provider callbacks are not rate-limited. They are authenticated by a 24+ character random secret (now enforced) and the optional IP allowlist; PIN guessing is bounded by the per-number lockout; free-text SMS sent to the AI is limited per number; the simulator is limited per IP. Throttling authenticated gateway traffic could drop real messages | documented |
 
 Security checks run: prompt injection and hostile outputs (`test_adversarial_prompts_and_hostile_outputs_change_nothing`);
 PII to the provider (wire checks in the draft and status-explanation tests); cross-user access to beneficiary,
@@ -159,6 +168,9 @@ Accessibility:
 
 | Suite | Commit | Result |
 |---|---|---|
+__FINAL__
+| `pytest tests` on the merge of `782b7b5` (before the MSG-1 fix) | `70241e8` | 314 passed, 5 skipped, 0 failed |
+| Release probe against a real server (`backend/scripts/release_probe.py`): gunicorn with `FLASK_ENV=production`, PostgreSQL, the OpenAI double, a simulated outbox, then an unreachable Africa's Talking URL | MSG-1 fix applied | **55 passed, 0 failed** ([`evidence/release-probe.md`](evidence/release-probe.md)) |
 | `pytest tests`: unit, integration, migrations, PostgreSQL 16 concurrency, e2e on gunicorn with PostgreSQL (includes the TypeScript client against the live API and the contracts type-check) | `06fc6ab` | **313 passed, 5 skipped, 0 failed, 0 xfailed.** Skipped: 4 opt-in real-OpenAI tests and 1 SQLite diagnostic |
 | `contracts`: `npm test` (tsc --strict and offline tests) | `06fc6ab` | type-check passes, 11/11 |
 | Clean clone, then the `DEPLOYMENT.md` local setup, then `scripts/smoke_test.py` | `078d215` (earlier today) | 21 PASS, 2 SKIP (translation without a key; PayPal order is opt-in), 0 FAIL |
@@ -174,7 +186,10 @@ Africa's Talking tests used local doubles. SMS went to the simulated outbox. The
 2. **OpenAI:** set `OPENAI_API_KEY`, set a project budget, run `flask fundbridge-ai check` and
    `FUNDBRIDGE_LIVE_OPENAI_TESTS=1 pytest tests/ai/test_openai_live.py`, then record the result in `integration/openai.md`.
 3. **Cursor:** publish the frontend branch so its journeys can be verified, and run `FRONTEND_WALKTHROUGH.md`.
-4. **Merge PR #8** (`feat/backend-core` → `main`), then PR #7.
+4. **Merge PR #7 first, then PR #8.** PR #8 (`feat/backend-core` → `main`) conflicts in one test file,
+   `backend/tests/integration/test_live_found_defects.py`, and PR #7 already contains the resolution. With PR #7 merged
+   (a fast-forward of `feat/backend-core`), PR #8 merges into `main` without conflicts; this was checked read-only with
+   `git merge-tree`.
 5. **Africa's Talking:** create an account and use the sandbox (`AT_USERNAME=sandbox`); for production, complete
    KYC, get a sender ID or shortcode and a USSD service code, register the callback URLs, and set
    `MESSAGING_ALLOWED_IPS`.

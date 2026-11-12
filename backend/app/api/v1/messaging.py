@@ -23,7 +23,7 @@ from typing import Any
 from flask import Blueprint, Flask, Response, current_app, request
 
 from app.integrations.http_envelope import error, ok, unauthenticated
-from app.integrations.messaging.callback_auth import ip_allowed, token_matches
+from app.integrations.messaging.callback_auth import MIN_CALLBACK_TOKEN_LENGTH, ip_allowed, token_is_strong, token_matches
 from app.integrations.messaging.gateways import AfricasTalkingSmsGateway, SimulatedSmsGateway
 from app.services.ai.ports import ActorResolver, CampaignCatalog
 from app.services.ai.rate_limit import SlidingWindowRateLimiter
@@ -142,7 +142,7 @@ def integration_status(app: Flask | None = None) -> dict:
         },
         "ussd": {
             "service_code": ext["service"].settings.ussd_code,
-            "callback_configured": bool(ext["callback_token"]),
+            "callback_configured": token_is_strong(ext["callback_token"]),
             "live_shortcode_verified": False,
         },
         "simulator_enabled": ext["simulator_enabled"],
@@ -156,7 +156,10 @@ def integration_status(app: Flask | None = None) -> dict:
 
 def _callback_denied() -> Response | None:
     ext = _ext()
-    if not ext["callback_token"]:
+    if not token_is_strong(ext["callback_token"]):
+        if ext["callback_token"]:  # configured but guessable: refuse rather than accept forgeable callbacks
+            current_app.logger.error("MESSAGING_CALLBACK_TOKEN is shorter than %d characters; callbacks refused",
+                                     MIN_CALLBACK_TOKEN_LENGTH)
         return error("MESSAGING_NOT_CONFIGURED", "Messaging callbacks are not configured.", 503)
     supplied = request.headers.get("X-FundBridge-Callback-Token") or request.args.get("token")
     if not token_matches(ext["callback_token"], supplied) or not ip_allowed(request.remote_addr, ext["allowed_ips"]):

@@ -4,7 +4,7 @@ FundBridge is a crowdfunding platform that lets donors anywhere give through Pay
 no PayPal account, no bank account and no smartphone: beneficiaries in East Africa who are paid out by mobile money
 and follow their campaign and payout on any phone, by USSD or SMS.
 
-> **Current status (2026-11-11): a working backend with sandbox and simulated providers.** No real PayPal payment,
+> **Current status (2026-11-12): a working backend with sandbox and simulated providers.** No real PayPal payment,
 > mobile-money payout, SMS, USSD session or OpenAI request has been made yet. See
 > [What is live, sandboxed or simulated](#what-is-live-sandboxed-or-simulated).
 
@@ -197,6 +197,9 @@ cd ../contracts && npm ci && npm test      # TypeScript client type-check and of
 
 `tests/e2e` starts the API under gunicorn and drives every role's journey over HTTP. PayPal and OpenAI are local
 stand-ins there. A redacted transcript of the latest run is in [`docs/evidence/journeys.md`](docs/evidence/journeys.md).
+`scripts/release_probe.py --database-url <scratch PostgreSQL URL>` runs 55 AI and feature-phone checks against a real
+server and the OpenAI stand-in, including hostile model output, fallbacks, caps, callbacks and an SMS outage; the
+latest result is in [`docs/evidence/release-probe.md`](docs/evidence/release-probe.md).
 Real-provider tests are opt-in: `FUNDBRIDGE_LIVE_OPENAI_TESTS=1 OPENAI_API_KEY=... pytest tests/ai/test_openai_live.py`.
 
 ## Deployment
@@ -226,7 +229,8 @@ short:
   - Requests are sent with `store=false` and a hashed per-user safety identifier.
   - Output is schema-validated, stripped of links and markup, and checked for unsafe claims.
   - Per-user, per-IP and daily limits apply.
-- **Callbacks:** a shared secret (constant-time comparison), an optional IP allowlist, idempotent processing.
+- **Callbacks:** a shared secret of at least 24 characters (constant-time comparison; shorter secrets are refused), an
+  optional IP allowlist, idempotent processing.
   PayPal webhooks are signature-verified with PayPal.
 - **Errors:** a uniform error envelope with a request ID; error responses and logs exclude SQL parameters, tokens
   and full phone numbers.
