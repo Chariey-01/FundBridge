@@ -1,7 +1,7 @@
 # FundBridge verification report: AI, feature phones and end-to-end product QA
 
 **Updated:** 2026-11-12 (final release verification). **Branch:** `feat/ai-integration-qa`; see the final commit in
-PR #7. It contains `feat/backend-core` **`782b7b5`** (the migration-logging fix) and everything before it.
+PR #7. It contains `feat/backend-core` **`601b152`** (which merges `main` and includes the `782b7b5` migration-logging fix).
 **Frontend:** no Cursor branch exists on the remote, so no web UI was verified.
 
 Every claim below points to a test or to an evidence file:
@@ -168,6 +168,7 @@ Accessibility:
 
 | Suite | Commit | Result |
 |---|---|---|
+| `pytest tests` (same scope as below), `contracts` npm test, release probe, after merging backend `601b152` | `adafd11` | **315 passed, 5 skipped, 0 failed**; contracts 11/11; probe 55/55 |
 | `pytest tests`: unit, integration, migrations, PostgreSQL 16 concurrency, e2e on gunicorn with PostgreSQL (includes the TypeScript client against the live API and the contracts type-check) | `11343c9` (contains `782b7b5`; later commits are docs only) | **315 passed, 5 skipped, 0 failed, 0 xfailed.** Skipped: 4 opt-in real-OpenAI tests (no key) and 1 SQLite diagnostic |
 | `contracts`: `npm test` (tsc --strict and offline tests) | `11343c9` | type-check passes, 11/11 |
 | `pytest tests` on the merge of `782b7b5` (before the MSG-1 fix) | `70241e8` | 314 passed, 5 skipped, 0 failed |
@@ -186,10 +187,9 @@ Africa's Talking tests used local doubles. SMS went to the simulated outbox. The
 2. **OpenAI:** set `OPENAI_API_KEY`, set a project budget, run `flask fundbridge-ai check` and
    `FUNDBRIDGE_LIVE_OPENAI_TESTS=1 pytest tests/ai/test_openai_live.py`, then record the result in `integration/openai.md`.
 3. **Cursor:** publish the frontend branch so its journeys can be verified, and run `FRONTEND_WALKTHROUGH.md`.
-4. **Merge PR #7 first, then PR #8.** PR #8 (`feat/backend-core` → `main`) conflicts in one test file,
-   `backend/tests/integration/test_live_found_defects.py`, and PR #7 already contains the resolution. With PR #7 merged
-   (a fast-forward of `feat/backend-core`), PR #8 merges into `main` without conflicts; this was checked read-only with
-   `git merge-tree`.
+4. **Merge PR #8 and PR #7** (either order). PR #8's earlier conflict is gone: `feat/backend-core` now contains `main`
+   (`bd2f22a`), so PR #8 is a fast-forward. PR #7's head contains `601b152`, so PR #7 fast-forwards
+   `feat/backend-core`. Both were checked read-only with `git merge-base` and `git merge-tree`.
 5. **Africa's Talking:** create an account and use the sandbox (`AT_USERNAME=sandbox`); for production, complete
    KYC, get a sender ID or shortcode and a USSD service code, register the callback URLs, and set
    `MESSAGING_ALLOWED_IPS`.

@@ -47,7 +47,7 @@ Public registration always creates a `donor`. To set up everyone else:
 
 ## Environment variables
 
-Generate secrets with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` and keep them out of git. `backend/.env.example` lists every variable.
+Generate secrets with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` and keep them out of git. `backend/.env.example` lists every variable. AI and messaging inventory (sources, secret or public, callback URLs, checklist): `docs/integration/CONFIGURATION_INVENTORY.md`.
 
 | Variable | Required | Purpose |
 |---|---|---|

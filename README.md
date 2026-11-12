@@ -161,7 +161,8 @@ MESSAGING_SIMULATOR_ENABLED=true .venv/bin/flask --app run:app run --port 5000
 ## Environment variables
 
 [`backend/.env.example`](backend/.env.example) lists every variable, with placeholders only, and a test checks that
-every setting the app reads is listed there. The main ones:
+every setting the app reads is listed there. For AI and messaging, [`docs/integration/CONFIGURATION_INVENTORY.md`](docs/integration/CONFIGURATION_INVENTORY.md)
+lists each variable with where to get it, whether it is a secret, the callback URLs and a copy-ready checklist. The main ones:
 
 | Variable | Purpose |
 |---|---|
