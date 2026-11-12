@@ -60,6 +60,29 @@ Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, C
 | Africa's Talking (SMS/USSD) | **Not connected.** Simulator plus a local API double | account, shortcode and USSD code needed |
 | Mobile-money payouts | **Simulated**; stops at `approved_for_submission` | no provider chosen |
 
+## Release audit 2026-11-12 (full report: `docs/RELEASE_AUDIT.md`)
+
+Gate **failed**: no frontend (Cursor), plus two backend defects reproduced on gunicorn + PostgreSQL. Strict-xfail
+reproductions are in `backend/tests/integration/test_release_audit_defects.py`; remove each marker when it XPASSes.
+
+For Codex, in priority order (all in `backend/app/api/v1/routes.py` unless noted):
+1. **AUD-1 (critical):** `review_payout` has no row lock. Concurrent approve and reject both return 200; in 5 of 15
+   live races the payout ended `approved_for_submission` with its reservation released. Lock the payout
+   (`with_for_update().populate_existing()`) and re-check the status after the lock. A scratch copy with exactly
+   that change passes the test.
+2. **AUD-2 (high, auth):** `login` without email/phone matches `email IS NULL OR phone IS NULL` and signed in as
+   the admin with only the admin's password. Require a non-empty string identifier.
+3. **AUD-3:** `update_campaign` skips the create validation; a 300-character title returns 500 on PostgreSQL;
+   `goal_amount` is silently ignored.
+4. **AUD-4/5/6:** `register` returns 500 for a non-string email, stores emails case-sensitively, accepts malformed ones.
+5. **AUD-7:** `config.py` falls back to SQLite in production and does not rewrite `postgres://` URLs.
+6. AUD-8 to AUD-12 and CI-1 (commit `.github/workflows/backend.yml`): see the report.
+
+For Cursor: F-1, publish the frontend branch. Nothing in sections B–I of the report has a UI yet.
+
+For Claude (this branch): identifier-less login attempts are not counted by the lockout in `hardening.py` (after
+AUD-2); T-1, the README's SQLite test command fails 2 PostgreSQL-only tests (owner to choose the fix).
+
 ## For Codex (canonical backend)
 
 ### Status of every tracked item against `967781d`
