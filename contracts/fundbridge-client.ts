@@ -33,6 +33,8 @@ import type {
   SimulatorMeta,
   SimulatorSmsReply,
   SimulatorUssdReply,
+  StatusExplanation,
+  StatusExplanationRequest,
   SupportRequest,
   Translation,
   TranslateRequest,
@@ -49,6 +51,13 @@ export interface Campaign {
   id: string; title: string; slug: string; description: string; category: string;
   goal: Money; status: CampaignStatus; review_status: string;
 }
+/** GET /campaigns/{id}: public fields plus ledger-backed raised; beneficiary_id only for the creator and staff */
+export interface CampaignDetail extends Campaign { raised: Money; beneficiary_id?: string }
+/** GET /beneficiaries/me/campaigns item (beneficiary only, every status of the caller's own campaigns) */
+export interface BeneficiaryCampaign extends Campaign { beneficiary_id: string; raised: Money; created_at: string; updated_at: string }
+/** GET /campaigns/review-queue item (reviewer, admin): submitted campaigns, oldest first */
+export interface ReviewQueueItem extends Campaign { beneficiary_id: string; raised: Money; submitted_at: string }
+export interface PageMeta { page: number; page_size: number; total: number }
 export interface CampaignInput {
   beneficiary_id: string; title: string; slug: string; description: string; category: string;
   goal_amount: string; goal_currency: string;
@@ -154,8 +163,9 @@ export function channelModes(status: IntegrationStatus, payoutProvider: string):
   return { sms, ussd, ai, payouts };
 }
 
-/** Outcome of returning from PayPal. Only "confirmed" may be shown as a successful donation. */
-export type PayPalReturnOutcome = "confirmed" | "not_approved" | "provider_unavailable" | "needs_review" | "pending";
+/** Outcome of returning from PayPal. Only "confirmed" may be shown as a successful donation; "failed" means the
+ * server recorded the payment as not completed (a new donation is needed). */
+export type PayPalReturnOutcome = "confirmed" | "failed" | "not_approved" | "provider_unavailable" | "needs_review" | "pending";
 
 // ------------------------------------------------------------------ client
 
@@ -226,7 +236,15 @@ export class FundBridgeClient {
 
   // campaigns
   listCampaigns(filter: { q?: string; category?: string } = {}) { return this.data<Campaign[]>("GET", "/api/v1/campaigns", { query: filter }); }
-  getCampaign(id: string) { return this.data<Campaign>("GET", `/api/v1/campaigns/${encodeURIComponent(id)}`); }
+  getCampaign(id: string) { return this.data<CampaignDetail>("GET", `/api/v1/campaigns/${encodeURIComponent(id)}`); }
+  async beneficiaryCampaigns(page = 1, pageSize = 20) {
+    const r = await this.request<BeneficiaryCampaign[]>("GET", "/api/v1/beneficiaries/me/campaigns", { query: { page: String(page), page_size: String(pageSize) } });
+    return { items: r.data, page: r.meta as unknown as PageMeta };
+  }
+  async reviewQueue(page = 1, pageSize = 20) {
+    const r = await this.request<ReviewQueueItem[]>("GET", "/api/v1/campaigns/review-queue", { query: { page: String(page), page_size: String(pageSize) } });
+    return { items: r.data, page: r.meta as unknown as PageMeta };
+  }
   campaignFunds(id: string) { return this.data<CampaignFunds>("GET", `/api/v1/campaigns/${encodeURIComponent(id)}/funds`); }
   myCampaigns() { return this.data<Campaign[]>("GET", "/api/v1/me/campaigns"); }
   createCampaign(input: CampaignInput) { return this.data<Campaign>("POST", "/api/v1/campaigns", { body: input }); }
@@ -276,7 +294,9 @@ export class FundBridgeClient {
     }
     const donation = await this.getDonation(donationId);
     if (donation.status === "completed") outcome = "confirmed";
-    else if (outcome === "pending" && presentDonation(donation.status).final) outcome = "needs_review";
+    // The server decided: PayPal declined/denied the capture or the order was cancelled (reconciliation, 9d3f80c).
+    else if (donation.status === "failed" || donation.status === "cancelled") outcome = "failed";
+    else if (presentDonation(donation.status).final) outcome = "needs_review";
     return { outcome, donation, presentation: presentDonation(donation.status), error: failure };
   }
 
@@ -328,5 +348,7 @@ export class FundBridgeClient {
   async draftCampaign(input: CampaignDraftRequest) { const r = await this.request<CampaignDraft>("POST", "/api/v1/ai/campaign-draft", { body: input }); return { draft: r.data, meta: r.meta as unknown as AIMeta }; }
   async translate(input: TranslateRequest) { const r = await this.request<Translation>("POST", "/api/v1/ai/translate", { body: input }); return { translation: r.data, meta: r.meta as unknown as AIMeta }; }
   async askAssistant(input: AssistantRequest) { const r = await this.request<AssistantReply>("POST", "/api/v1/ai/beneficiary-assistant", { body: input }); return { reply: r.data, meta: r.meta as unknown as AIMeta }; }
+  /** Read-only. Show data.status_label/confirmed as the status; the explanation is supporting text. */
+  async explainStatus(input: StatusExplanationRequest) { const r = await this.request<StatusExplanation>("POST", "/api/v1/ai/status-explanation", { body: input }); return { explanation: r.data, meta: r.meta as unknown as AIMeta }; }
   async aiSearch(input: CampaignSearchRequest) { const r = await this.request<CampaignSearchResult>("POST", "/api/v1/ai/campaign-search", { body: input }); return { result: r.data, meta: r.meta as unknown as AIMeta }; }
 }
