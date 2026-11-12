@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 import requests
 
+from app.api.v1.routes import fingerprint
 from app.extensions import db
 from app.models.core import Donation, DonationStatus, Role
 
@@ -48,3 +49,26 @@ def test_provider_rejection_keeps_donation_pending(client, seeded, monkeypatch):
     assert body["details"] == {"provider_status": 422, "provider_issue": "ORDER_NOT_APPROVED"}
     assert "charged" not in body["message"]  # never claim the donor was or was not charged
     assert db.session.get(Donation, donation.id).status == DonationStatus.pending
+
+
+def test_pending_order_replay_returns_validated_checkout_link(client, seeded, monkeypatch):
+    from app.integrations.payments import paypal
+
+    donor = make_user("retry-donor@example.test", Role.donor)
+    payload = {"campaign_id": seeded["campaign"].id, "amount": "25.00", "currency": "USD"}
+    donation = add_pending_donation(seeded["campaign"], "25.00", "retry-order", donor_id=donor.id)
+    donation.idempotency_fingerprint = fingerprint({**payload, "provider": "paypal"})
+    db.session.commit()
+    monkeypatch.setattr(paypal.PayPalSandboxAdapter, "get_order", lambda self, order_id: {
+        "id": order_id, "purchase_units": [{"reference_id": donation.id,
+                                                "amount": {"currency_code": "USD", "value": "25.00"}}],
+        "links": [{"rel": "payer-action", "href": "https://www.sandbox.paypal.com/checkoutnow?token=order"}],
+    })
+
+    response = client.post("/api/v1/donations/orders", headers={**auth(client, "retry-donor@example.test"),
+                                                                   "Idempotency-Key": "retry-order"}, json=payload)
+    assert response.status_code == 200
+    body = response.get_json()["data"]
+    assert body["id"] == donation.id and body["status"] == DonationStatus.pending.value
+    assert body["approval_url"].startswith("https://www.sandbox.paypal.com/")
+    assert Donation.query.count() == 1

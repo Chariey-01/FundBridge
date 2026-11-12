@@ -55,6 +55,13 @@ def serialize_campaign(x, *, include_beneficiary=False, include_raised=False, in
 def serialize_donation(x): return {"id":x.id,"campaign_id":x.campaign_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 def serialize_payout(x): return {"id":x.id,"campaign_id":x.campaign_id,"beneficiary_id":x.beneficiary_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 
+def approval_url(order):
+    """Return only PayPal's checkout continuation URL, never a client supplied URL."""
+    for link in order.get("links", []) if isinstance(order, dict) else []:
+        if isinstance(link, dict) and link.get("rel") in ("approve", "payer-action") and isinstance(link.get("href"), str):
+            return link["href"]
+    return None
+
 @api.get("/public/config")
 def public_config():
     return ok({"payments":{"paypal":{"mode":"sandbox" if current_app.config.get("PAYPAL_CLIENT_ID") else "unconfigured"}}, "payouts":{"provider":current_app.config["PAYOUT_PROVIDER"],"mode":"simulator" if current_app.config["PAYOUT_PROVIDER"] == "simulator" else "unconfigured"}, "feature_phone":{"sms":False,"ussd":False}})
@@ -70,7 +77,11 @@ def register():
 
 @api.post("/auth/login")
 def login():
-    data=body(); identity=data.get("email") or data.get("phone_number"); password=data.get("password", "")
+    data=body(); email=data.get("email"); phone=data.get("phone_number"); password=data.get("password", "")
+    # A missing identity must not turn into ``email IS NULL OR phone_number IS NULL``.
+    # Keep the same generic 401 response as every other invalid credential attempt.
+    identity = email.strip() if isinstance(email, str) and email.strip() else phone.strip() if isinstance(phone, str) and phone.strip() else None
+    if identity is None: raise PermissionError("INVALID_CREDENTIALS")
     user=User.query.filter((User.email==identity) | (User.phone_number==identity)).first()
     if not user or user.status != "active" or not user.check_password(password): raise PermissionError("INVALID_CREDENTIALS")
     return ok({"access_token":create_access_token(identity=user.id),"user":{"id":user.id,"role":user.role.value}})
@@ -206,7 +217,17 @@ def donation_order():
     existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
     if existing:
         if existing.idempotency_fingerprint != request_fingerprint: raise ValueError("IDEMPOTENCY_KEY_REUSED")
-        return ok(serialize_donation(existing))
+        # A retry of the same pending checkout must continue the existing PayPal order,
+        # never create another donation/order.  Re-read and validate provider state before
+        # returning its checkout link; a missing/unconfigured provider still gets the safe
+        # idempotent donation response without a link.
+        response=serialize_donation(existing)
+        if (existing.status == DonationStatus.pending and existing.provider_order_id
+                and current_app.config.get("PAYPAL_CLIENT_ID") and current_app.config.get("PAYPAL_CLIENT_SECRET")):
+            order=PayPalSandboxAdapter(current_app.config).get_order(existing.provider_order_id)
+            PayPalSandboxAdapter._validate_order_representation(order, existing)
+            response["approval_url"]=approval_url(order)
+        return ok(response)
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
     # id is assigned now (not at INSERT) because PayPal must receive it as purchase_units[0].reference_id;
@@ -235,7 +256,7 @@ def donation_order():
         db.session.rollback(); existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
         if existing and existing.idempotency_fingerprint == request_fingerprint: return ok(serialize_donation(existing))
         raise ValueError("IDEMPOTENCY_KEY_REUSED")
-    return ok({**serialize_donation(donation),"approval_url":next((l["href"] for l in order.get("links",[]) if l.get("rel")=="approve"),None)},201)
+    return ok({**serialize_donation(donation),"approval_url":approval_url(order)},201)
 
 @api.post("/webhooks/paypal")
 def paypal_webhook():
@@ -355,12 +376,19 @@ def request_payout():
 @api.post("/payouts/<payout_id>/review")
 @roles_allowed(Role.reviewer,Role.admin)
 def review_payout(payout_id):
-    p=Payout.query.get_or_404(payout_id); data=body(); decision=data.get("decision")
-    if p.status != PayoutStatus.requested: raise ValueError("INVALID_PAYOUT_TRANSITION")
-    if p.requested_by == g.current_user.id: raise PermissionError("SELF_APPROVAL_FORBIDDEN")
+    data=body(); decision=data.get("decision")
+    if decision not in ("approve", "reject"): raise ValueError("VALIDATION_ERROR")
+    # Serialize reviewers as well as payout requests.  The state check occurs after
+    # the row lock, so a concurrent approve/reject cannot both transition/release.
+    p=db.session.query(Payout).filter_by(id=payout_id).with_for_update().one_or_none()
+    if p is None: abort(404)
+    db.session.query(Campaign).filter_by(id=p.campaign_id).with_for_update().one()
+    if p.status != PayoutStatus.requested:
+        db.session.rollback(); raise ValueError("INVALID_PAYOUT_TRANSITION")
+    if p.requested_by == g.current_user.id:
+        db.session.rollback(); raise PermissionError("SELF_APPROVAL_FORBIDDEN")
     if decision == "reject": p.status=PayoutStatus.rejected; release_payout(p,"rejected")
-    elif decision == "approve": p.status=PayoutStatus.approved_for_submission
-    else: raise ValueError("VALIDATION_ERROR")
+    else: p.status=PayoutStatus.approved_for_submission
     db.session.add(AuditLog(actor_id=g.current_user.id,action=f"payout.{decision}",resource_type="payout",resource_id=p.id)); db.session.commit(); return ok(serialize_payout(p))
 
 @api.get("/payouts")

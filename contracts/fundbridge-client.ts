@@ -71,6 +71,7 @@ export interface BeneficiaryProfile {
   /** Send back unchanged when verifying; a 409 PROFILE_CHANGED means the profile changed after review. */
   revision: string;
 }
+export interface CampaignBeneficiary { id: string; display_name: string; country_code: string; verification_status: VerificationStatus }
 export interface Session { access_token: string; user: { id: string; role: Role } }
 export interface AccountSummary { id: string; email: string | null; phone_number: string | null; role: Role; status: string }
 
@@ -189,7 +190,9 @@ export class FundBridgeClient {
     if (opts.body !== undefined) headers["Content-Type"] = "application/json";
     if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
     if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
-    const res = await this.fetchImpl(url, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
+    // Fetch's TypeScript signature does not accept URL even though browsers do;
+    // pass a string so injected/browser fetch implementations behave identically.
+    const res = await this.fetchImpl(url.toString(), { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) });
     const requestId = res.headers.get("X-Request-ID");
     const text = await res.text();
     const json = text ? JSON.parse(text) : null;
@@ -297,6 +300,7 @@ export class FundBridgeClient {
     return this.data<{ id: string; verification_status: VerificationStatus }>("POST", "/api/v1/beneficiaries", { body: input });
   }
   listBeneficiaries(verificationStatus?: VerificationStatus) { return this.data<BeneficiaryProfile[]>("GET", "/api/v1/beneficiaries", { query: { verification_status: verificationStatus } }); }
+  findCampaignBeneficiaries(query?: string) { return this.data<CampaignBeneficiary[]>("GET", "/api/v1/beneficiaries/lookup", { query: { q: query } }); }
   getBeneficiary(id: string) { return this.data<BeneficiaryProfile>("GET", `/api/v1/beneficiaries/${encodeURIComponent(id)}`); }
   decideVerification(id: string, decision: "verify" | "reject", revision: string, reason?: string) {
     return this.data<BeneficiaryProfile>("POST", `/api/v1/beneficiaries/${encodeURIComponent(id)}/verification`, { body: { decision, revision, reason } });
