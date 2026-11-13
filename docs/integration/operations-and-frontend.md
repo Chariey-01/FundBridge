@@ -73,7 +73,7 @@ Use `contracts/fundbridge-client.ts`. It is typed, framework-agnostic and tested
 | 429 | `RATE_LIMITED` | `Retry-After` header and `details.retry_after_seconds` |
 | 502 | `PROVIDER_REQUEST_REJECTED` | PayPal refused (`details.provider_status`, `details.provider_issue`, e.g. `ORDER_NOT_APPROVED`) |
 | 503 | `PROVIDER_UNAVAILABLE` | PayPal unreachable or timed out; the donation may or may not have been captured, so reconcile and re-read it |
-| 400 | `PAYMENT_NOT_CONFIRMED` (from reconcile) | PayPal holds the capture (pending); keep showing pending. Open item R-1b: this should be a 200 pending |
+| 200 | Donation `pending` (from reconcile) | PayPal holds the capture or the order has not completed; keep showing pending. It is never credited until a completed capture is authoritatively verified. |
 | 405 | `METHOD_NOT_ALLOWED` | Envelope instead of HTML |
 | 500 | `INTERNAL_ERROR` | `details.request_id` for support |
 

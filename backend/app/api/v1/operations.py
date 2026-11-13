@@ -116,6 +116,12 @@ def _profile(p: BeneficiaryProfile) -> dict:
             "has_payout_destination": bool(p.payout_destination_reference), "revision": profile_revision(p)}
 
 
+def _campaign_beneficiary(p: BeneficiaryProfile) -> dict:
+    """Creator-safe selection data; never expose contact or payout details."""
+    return {"id": p.id, "display_name": p.display_name, "country_code": p.country_code,
+            "verification_status": p.verification_status}
+
+
 @bp.get("/beneficiaries")
 @roles_allowed(Role.agent, Role.reviewer, Role.admin)
 def list_beneficiaries():
@@ -126,6 +132,18 @@ def list_beneficiaries():
             raise ValueError("VALIDATION_ERROR")
         query = query.filter_by(verification_status=status)
     return ok([_profile(p) for p in query.order_by(BeneficiaryProfile.created_at.desc()).limit(100)])
+
+
+@bp.get("/beneficiaries/lookup")
+@roles_allowed(Role.creator, Role.admin)
+def campaign_beneficiary_lookup():
+    """Allow campaign creators to choose a beneficiary without disclosing private profiles."""
+    term = (request.args.get("q") or "").strip()[:100]
+    query = BeneficiaryProfile.query
+    if term:
+        pattern = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        query = query.filter(BeneficiaryProfile.display_name.ilike(pattern, escape="\\"))
+    return ok([_campaign_beneficiary(p) for p in query.order_by(BeneficiaryProfile.display_name, BeneficiaryProfile.id).limit(100)])
 
 
 @bp.get("/beneficiaries/<profile_id>")

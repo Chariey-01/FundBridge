@@ -40,6 +40,8 @@ export interface AIMeta {
   degraded: boolean;
   fallback_reason?: string;
   output_replaced_by_guardrail?: boolean;
+  /** why generated text was replaced, e.g. "claims_unconfirmed_outcome" (status explanation only) */
+  guardrail_reason?: string;
 }
 
 // POST /api/v1/ai/campaign-draft (auth)
@@ -89,12 +91,42 @@ export interface CampaignSearchResult {
   interpreted_filters: { keywords: string[]; category: CampaignCategory | null; country_code: string | null };
   filters_relaxed: boolean;
   results: PublicCampaignSummary[];
+  /** set when AI search is unavailable and keyword matching answered; show it near the results */
+  notice: string | null;
+}
+
+// POST /api/v1/ai/status-explanation (auth; same access as GET /donations/{id} and GET /payouts/{id})
+export interface StatusExplanationRequest { kind: "donation" | "payout"; id: string; language?: LanguageCode }
+export interface StatusExplanation {
+  kind: "donation" | "payout";
+  id: string;
+  /** copied verbatim from the backend record: render the status badge from this, never from the text */
+  status: DonationStatus | PayoutStatus | string;
+  status_label: string;
+  /** true only for donation "completed" or payout "succeeded" */
+  confirmed: boolean;
+  final: boolean;
+  amount: Money;
+  campaign_title: string;
+  /** ledger-backed confirmed campaign total (donations only) */
+  campaign_raised: Money | null;
+  as_of: string | null;
+  /** AI-written when meta.ai_generated, otherwise identical to verified_text */
+  explanation: string;
+  language: LanguageCode;
+  /** deterministic text built from the record; offer it as "show FundBridge's standard explanation" */
+  verified_text: string;
+  verified_text_language: "en" | "sw";
+  notice: string;
+  source: "backend_record";
 }
 
 // GET /api/v1/integrations/status (public)
 export interface AIStatus {
   provider: string; model: string | null; mode: "live" | "fallback_only";
-  features: Record<"campaign_draft" | "translate" | "beneficiary_assistant" | "campaign_search", string>;
+  features: Record<"campaign_draft" | "translate" | "beneficiary_assistant" | "campaign_search" | "status_explanation", string>;
+  /** provider calls allowed per UTC day per server process; 0 = no cap */
+  daily_request_limit: number;
   supported_languages: Record<LanguageCode, string>;
   /** true only after a real provider call succeeded in this server process; "live" alone means configured */
   model_verified: boolean;
