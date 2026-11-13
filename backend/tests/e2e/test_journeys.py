@@ -7,8 +7,6 @@ import random
 import uuid
 from decimal import Decimal
 
-import pytest
-
 from .provider_doubles import VALID_WEBHOOK_SIGNATURE
 
 
@@ -243,6 +241,17 @@ def test_reconcile_after_provider_side_capture_completes_donation_once(live):
     _err(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", stranger["token"]), 403, "FORBIDDEN")
 
 
+def test_reconcile_with_declined_capture_marks_donation_failed(live):
+    """feat/backend-core 9d3f80c: a DECLINED capture found by reconciliation is final; nothing is credited."""
+    world = _published_campaign(live, title_word="Declined")
+    donor = live.account("donor")
+    donation, order_id = _donate(live, donor, world["campaign"]["id"], "7.00", capture=False)
+    live.paypal.capture_out_of_band(order_id, capture_status="DECLINED")
+    assert _ok(live.call("POST", f"/api/v1/donations/{donation['id']}/reconcile", donor["token"]))["status"] == "failed"
+    assert _ok(live.call("GET", f"/api/v1/donations/{donation['id']}", donor["token"]))["status"] == "failed"
+    assert _funds(live, world["campaign"]["id"])["raised"] == "0.00"
+
+
 def test_reconcile_before_capture_leaves_donation_pending(live):
     world = _published_campaign(live, title_word="Sports")
     donor = live.account("donor")
@@ -413,12 +422,12 @@ def test_server_logs_hold_no_secrets_or_phone_numbers(live):
 
 
 def test_order_creation_against_paypal_default_response(live):
+    """Was DEFECT C-4b; fixed in feat/backend-core b45ee29 (create-order sends "Prefer: return=representation").
+    The double returns PayPal's default minimal body unless that header is sent, as every journey here now relies on."""
+    assert live.paypal.assume_representation is False
     world = _published_campaign(live, title_word="Minimal")
     donor = live.account("donor")
-    live.paypal.assume_representation = False  # behave exactly like PayPal's default
-    try:
-        res = live.call("POST", "/api/v1/donations/orders", donor["token"], headers={"Idempotency-Key": uuid.uuid4().hex},
-                        json={"campaign_id": world["campaign"]["id"], "amount": "5.00", "currency": "USD"})
-    finally:
-        live.paypal.assume_representation = True
+    res = live.call("POST", "/api/v1/donations/orders", donor["token"], headers={"Idempotency-Key": uuid.uuid4().hex},
+                    json={"campaign_id": world["campaign"]["id"], "amount": "5.00", "currency": "USD"})
     assert res.status_code == 201, res.text
+    assert res.json()["data"]["approval_url"].startswith("https://www.sandbox.paypal.com/")

@@ -1,62 +1,142 @@
 # Coordination notes: Claude (AI, feature phones, integration tests, deployment docs) → Codex (backend) and Cursor (frontend)
 
-Branch `feat/ai-integration-qa` (PR #3) is stacked on `feat/backend-core` (PR #2) and merges it regularly. PR #3 stays separate until the canonical backend is ready.
-Last merged backend commit: `ded764f` (2026-11-11).
+
+## Current state (updated 2026-11-11)
+
+| Branch | Owner | Latest known / verified | Notes |
+|---|---|---|---|
+| `feat/backend-core` | Codex | **`601b152`** (merges `main` via `bd2f22a`), merged and verified by this branch's full suite | canonical backend; PR #8 (→ `main`) open |
+| `feat/frontend-core` | Cursor | **not on the remote** (checked 2026-11-11 evening with `git ls-remote`; no frontend branch of any name) | nothing could be verified |
+| `feat/ai-integration-qa` | AI, messaging, integration, demo infrastructure | see `git log`; PR **#7** (→ `feat/backend-core`) is open | byte-identical to `feat/backend-core` in every backend-owned file |
+| `main` | maintainer | `6f3c335` | **lacks `b45ee29`..`601b152`**: deploy from `feat/backend-core` until PR #8 is merged |
+
+### Integration blockers, by severity
+1. `main` lacks `b45ee29`..`967781d` (C-4b, X-1, R-2, S-5, X-2, M-1b, M-2 fixes; G-6 and G-7). Owner: maintainer, merging PR #8 (`feat/backend-core` → `main`).
+2. The frontend is not published, so no route, payload, loading/error state or "no false success" rule has been checked against Cursor's code, and there is no browser walkthrough (`FRONTEND_WALKTHROUGH.md`). Owner: Cursor.
+3. No payout provider: payouts stop at `approved_for_submission`. Owner: project owner (provider choice), then Codex.
+4. Credentials: PayPal sandbox, OpenAI key, Africa's Talking account, shortcode and USSD code, payout provider. Owner: project owner.
+5. Kiswahili wording has not been reviewed by a native speaker: `kiswahili-review.md`. Owner: project owner.
+
+### Work completed on this branch (most recent first)
+- **AI, feature-phone and product QA round (2026-11-11 night):** full report in `docs/VERIFICATION_REPORT.md`.
+  - Merged `967781d`. G-6/G-7 implemented by Codex as `GET /beneficiaries/me/campaigns` and `GET /campaigns/review-queue`; the proposal xfails are replaced by tests of the real contract, and `contracts/` follows it.
+  - New `POST /api/v1/ai/status-explanation`: an AI explanation of one donation or payout from the backend record, read-only, with the same access as the core GET routes.
+  - Fixed AI-1 (decimal amounts hid claims from the guardrail, High), AI-3 (fallback draft labelled "AI-assisted"), AI-4 (no daily AI cap).
+  - Chained role-journey e2e with a redacted transcript (`docs/evidence/journeys.md`); README rewritten.
+- **Final sprint (2026-11-11 evening):**
+  - merged `7115094`; R-2, S-5 and X-2 xfails now pass and are kept as regression tests;
+  - fixed an AI guardrail gap: Kiswahili "money moved" claims were only caught in the i- noun class (`imetumwa`), so "malipo yameidhinishwa" or "pesa zimetumwa" passed; now every noun class is covered, with a regression test;
+  - `kiswahili-review.md`, generated from the code, for a native-speaker reviewer;
+  - clean-checkout check of `docs/DEPLOYMENT.md` "Local setup" on a fresh PostgreSQL database: migrate, create-admin, check-config, plain seed (0 financial rows), smoke test 21 PASS / 2 SKIP / 0 FAIL.
+- **Demo infrastructure:**
+  - `fundbridge-demo seed --scenarios`: labelled demo donations and payouts created through the core services;
+  - `scripts/smoke_test.py`;
+  - a validated `.env.example`;
+  - `docs/RUNBOOK.md`, `docs/DEMO_SCRIPT.md`, `docs/RELEASE_CHECKLIST.md`, `FRONTEND_WALKTHROUGH.md`.
+- **Executable proposed contracts** for G-6 and G-7.
+- **Independent verification of `b45ee29`:** C-4b and X-1 fixed; R-2, S-5 and X-2 found or kept, with reproductions.
+- **Frontend contracts:** reconcile-aware PayPal return with a `failed` outcome, a consumption guide and type-checked examples.
+
+Outstanding: nothing blocking on this branch. Remaining work belongs to Codex, Cursor or the owner (blockers above).
+
+### Test runs
+| When | Backend commit | Branch commit | Suite | Result |
+|---|---|---|---|---|
+| 2026-11-12 | `601b152` | merge `adafd11` | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn; `contracts` npm test; release probe | **315 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 0 failed; contracts 11/11; probe 55/55 |
+| 2026-11-12 | `782b7b5` | `11343c9` | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn; `contracts` npm test; release probe | **315 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 0 failed; contracts 11/11; probe 55/55 |
+| 2026-11-11 night | `967781d` | `06fc6ab` | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | **313 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 0 xfailed, 0 failed |
+| 2026-11-11 evening | `7115094` | merge `078d215` (before the guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e), gunicorn | 285 passed, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 3 failed = the R-2, S-5 and X-2 strict xfails now passing; converted to regression tests, then `tests/e2e` 28/28 and `test_live_found_defects` + `test_migrations` all pass |
+| 2026-11-11 evening | `7115094` | `a1cf9c9` (guardrail fix) | `pytest tests`, PostgreSQL 16 (integration and e2e, including the contracts type-check and live-API client test), gunicorn | **290 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 2 xfailed (G-6, G-7), 0 failed |
+| 2026-11-11 evening | `7115094` | merge `078d215` | clean clone → `DEPLOYMENT.md` local setup → `scripts/smoke_test.py` | 21 PASS, 2 SKIP (translation without a key; PayPal order is opt-in), 0 FAIL |
+| 2026-11-11 | `b45ee29` | `dbaa6e1` plus the docs and contract-gap tests in the next commit | `pytest tests`, PostgreSQL 16.15 (integration and e2e), gunicorn | **275 passed**, 5 skipped (4 opt-in real-OpenAI, 1 diagnostic), 8 xfailed (R-2, S-5, X-2, M-2, M-1b ×2, G-6, G-7) |
+| 2026-11-11 | `b45ee29` | same | `contracts`: `npm test` | tsc --strict ✅, 11/11 |
+| 2026-11-11 | `b45ee29` | same | e2e `test_demo_smoke`: seed CLI, then `scripts/smoke_test.py` against gunicorn | 23 PASS, 0 SKIP (PayPal and OpenAI were local doubles) |
+
+### External services: simulated versus connected
+| Service | State | Evidence available |
+|---|---|---|
+| PayPal | **Not connected.** Sandbox adapter, tested only against a local Orders v2 double | real sandbox needs credentials (`EXTERNAL_CHECKLIST.md`) |
+| OpenAI | **Not connected.** Tested against mocks and a local double | `flask fundbridge-ai check` once a key exists |
+| Africa's Talking (SMS/USSD) | **Not connected.** Simulator plus a local API double | account, shortcode and USSD code needed |
+| Mobile-money payouts | **Simulated**; stops at `approved_for_submission` | no provider chosen |
+
+## Release audit 2026-11-12 (full report: `docs/RELEASE_AUDIT.md`)
+
+Gate **failed**: no frontend (Cursor), plus two backend defects reproduced on gunicorn + PostgreSQL. Strict-xfail
+reproductions are in `backend/tests/integration/test_release_audit_defects.py`; remove each marker when it XPASSes.
+
+For Codex, in priority order (all in `backend/app/api/v1/routes.py` unless noted):
+1. **AUD-1 (critical):** `review_payout` has no row lock. Concurrent approve and reject both return 200; in 5 of 15
+   live races the payout ended `approved_for_submission` with its reservation released. Lock the payout
+   (`with_for_update().populate_existing()`) and re-check the status after the lock. A scratch copy with exactly
+   that change passes the test.
+2. **AUD-2 (high, auth):** `login` without email/phone matches `email IS NULL OR phone IS NULL` and signed in as
+   the admin with only the admin's password. Require a non-empty string identifier.
+3. **AUD-3:** `update_campaign` skips the create validation; a 300-character title returns 500 on PostgreSQL;
+   `goal_amount` is silently ignored.
+4. **AUD-4/5/6:** `register` returns 500 for a non-string email, stores emails case-sensitively, accepts malformed ones.
+5. **AUD-7:** `config.py` falls back to SQLite in production and does not rewrite `postgres://` URLs.
+6. AUD-8 to AUD-12 and CI-1 (commit `.github/workflows/backend.yml`): see the report.
+
+For Cursor: F-1, publish the frontend branch. Nothing in sections B–I of the report has a UI yet.
+
+For Claude (this branch): identifier-less login attempts are not counted by the lockout in `hardening.py` (after
+AUD-2); T-1, the README's SQLite test command fails 2 PostgreSQL-only tests (owner to choose the fix).
 
 ## For Codex (canonical backend)
 
-### Your latest changes, checked on this branch
+### Status of every tracked item against `967781d`
 
-| Change | Result |
-|---|---|
-| `ee43660` R-1 `POST /donations/{id}/reconcile` | Works over live HTTP against a PayPal double: a provider-side capture is credited once, with no second capture call; a pending order stays pending. **It depends on C-4 below.** |
-| `ee43660` M-1 fingerprint backfill | Works. Upgrading a database at `18323330d500` that holds a completed donation, its ledger credit, a pending donation and a reserved payout keeps every financial row identical on SQLite and PostgreSQL (`test_upgrade_preserves_existing_financial_data`). |
-| `ded764f` campaign audit flush (C-2) | Same fix as this branch; the merge took your version. |
-
-### Concrete conflicts and open items
-
-**C-4 (critical): still missing on `feat/backend-core`. Without it, PayPal capture and your reconcile can never succeed.**
-- Where: `backend/app/api/v1/routes.py`, `donation_order()`. `Donation(...)` is not flushed before `adapter.create_order(donation, ...)`, so `purchase_units[0].reference_id` is sent as `null`. Capture and reconcile both require `reference_id == donation.id`, so they raise `PAYMENT_ORDER_MISMATCH`.
-- Reproduce on your branch: extract it (`git archive origin/feat/backend-core backend | tar -x -C /tmp/fb`), then run `/tmp/fb/backend` with `PAYPAL_BASE_URL` pointed at any HTTP server that records the request body, and create one order. Observed on `ded764f`: `reference_id sent to PayPal: None`. Your test `test_paypal_reconciliation_is_authoritative_and_idempotent` patches `get_order` to return the right reference, so it cannot catch this.
-- Fix on this branch: `Donation(id=uuid_str(), ...)` before the provider call. Regression tests: `tests/integration/test_live_found_defects.py::test_paypal_order_carries_the_donation_id_as_reference`, plus the e2e PayPal double, which rejects a null reference.
-
-**R-1b (medium): reconcile returns 400 when PayPal holds the capture.**
-- Where: `reconcile_donation()`. When the order is `COMPLETED` but `captures[0].status` is `PENDING` (held for review), `mark_donation_completed` raises `PAYMENT_NOT_CONFIRMED`, so the response is `400`. Your contract text says non-final provider states leave the donation pending. Nothing is credited, so it is safe, but clients see an error instead of `200 pending`.
-- Reproduce: strict xfail `tests/e2e/test_journeys.py::test_reconcile_with_pending_capture_stays_pending`. Suggestion: if the first capture's status is not `COMPLETED`, return the pending donation.
-
-**M-1b (medium): old databases keep the global idempotency uniqueness.**
-- Where: `migrations/versions/a0d4581f14e2_initial_schema.py` was edited in place in `c3e4e3a`, so `d7f2b35d0ed5` never drops `donation_idempotency_key_key` or `payout_idempotency_key_key` on databases created before that commit. After upgrading to head, two users who send the same `Idempotency-Key` collide with an IntegrityError (500).
-- Reproduce: strict xfail `tests/integration/test_migrations.py::test_upgrade_from_original_initial_schema_drops_global_key_uniqueness` (SQLite and PostgreSQL). Manually: build a database with `git archive 1a3a9d9 backend/migrations`, upgrade it with today's migrations, then list `pg_constraint`; both constraints are still there. Suggestion: in a new migration, drop them if they exist.
-
-**M-2 (low): still open.** The initial migration's downgrade leaves PostgreSQL enum types behind (strict xfail `test_full_downgrade_then_upgrade[postgresql]`).
-
-**Migration chain.** Do not add a migration that revises `d7f2b35d0ed5`: this branch's messaging migration `c3f1a9e7d2b4` already revises it, so that would create two heads again (M-0). If you must, tell me and I will re-chain mine after yours. `tests/integration/test_migrations.py::test_single_alembic_head` catches it.
-
-### This branch's fixes in backend files that are not on `feat/backend-core`
-
-Each has a regression test here; please adopt them or replace them with your own fix and keep the test:
-
-| ID | Fix | File |
+| ID | Item | Status |
 |---|---|---|
-| C-4 | PayPal `reference_id` (above) | `routes.py` |
-| P-1 | Phone change forces reverification (your branch writes `phone_number` before the check, so the check never fires) | `routes.py` |
-| C-3 | `beneficiary.onboarded` audit entry | `routes.py` |
-| D-1 | `-r requirements-integrations.txt` | `requirements.txt` |
-| — | `GET /campaigns?q=` keyword search | `routes.py` |
+| C-4, C-4b | PayPal reference and `Prefer: return=representation` | **Fixed**, verified over HTTP with a PayPal-default double |
+| R-1, R-1b, declined capture | Reconciliation | Fixed and verified |
+| X-1 | Duplicate onboarding audit | **Fixed** (b45ee29), verified |
+| P-1 | Phone reverification | Fixed, verified |
+| M-1 | Upgrade with existing data | Fixed, verified on SQLite and PostgreSQL |
+| X-2 | Two `?q=` filters ANDed in `list_campaigns()` | **Fixed** (4bae876), regression test `test_keyword_search_matches_category_as_ported` |
+| R-2 | Parallel reconciles → HTTP 500 | **Fixed** (4bae876, 7115094), regression test `test_parallel_reconciliations_never_return_500` (PostgreSQL, gunicorn) |
+| S-5 | Parallel same-key orders → HTTP 500 instead of replay | **Fixed** (4bae876), regression test `test_parallel_orders_with_one_key_replay_instead_of_500` |
+| M-1b | Old global idempotency uniqueness survives upgrade | **Fixed** (e4a6c8d9f012), verified on SQLite and PostgreSQL |
+| M-2 | PostgreSQL full rollback leaves enum types | **Fixed** (7115094), verified on PostgreSQL |
 
-New modules on this branch (registered from `init_integrations`, no core edits): `operations.py` (roles, verification, balances), `hardening.py`, `admin_cli.py`, `ai_cli.py`, `messaging_cli.py`. The feature-phone dedup uses your `provider_webhook_event` table (provider `africastalking`); `fundbridge-messaging prune-events` deletes only those rows.
+| G-6, G-7 | Beneficiary campaign list; review queue | **Implemented** (967781d) as `/beneficiaries/me/campaigns` and `/campaigns/review-queue`; tested with the seeded demo data |
+
+No backend defect found by this branch is open against `967781d`. One observation (L-4, low): the review queue orders by `created_at`, while its `submitted_at` is `updated_at`, so a campaign resubmitted after rejection keeps its original place. Confirm whether that is intended. The sections on R-2 and S-5 below are kept for the record.
+
+### R-2 (fixed in 4bae876/7115094): parallel reconciliations returned HTTP 500
+- Where: `backend/app/api/v1/routes.py` `reconcile_donation()`. Two requests both read `pending`, both call `mark_donation_completed`, and the second `db.session.commit()` raises `IntegrityError` (`UniqueViolation` on the ledger credit).
+- Money is safe: the unique constraints keep it to one credit, and the e2e test checks that. But clients get `500 INTERNAL_ERROR` for a benign race, and the logs fill with errors.
+- Reproduce on PostgreSQL: `E2E_DATABASE_URL=... pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_reconciliations_never_return_500 --runxfail` → 7 of 8 responses are 500.
+- Suggestion: lock the donation row (`with_for_update()`) and re-check its status before calling the provider, or catch `IntegrityError`, roll back, re-read and return the donation. Capture has the same shape: it only avoids the race today because PayPal answers repeat captures with 422.
+
+### S-5 (fixed in 4bae876): parallel orders with one Idempotency-Key returned HTTP 500
+- Where: `routes.py` `donation_order()` at `db.session.add(donation); db.session.flush()`. On PostgreSQL the second insert waits for the first transaction, then raises `UniqueViolation` on `uq_donation_donor_idempotency`.
+- Exactly one donation is created, which is correct, but the other callers get 500 instead of the replayed donation the contract promises. A double-clicked "Donate" button or a retried request on a slow network hits this.
+- Reproduce: `pytest tests/e2e/test_zz_financial_integrity.py::test_parallel_orders_with_one_key_replay_instead_of_500 --runxfail` (PostgreSQL) → 7 of 8 are 500.
+- Suggestion: on `IntegrityError` at that flush, roll back, re-select by `(donor_id, idempotency_key)`, check the fingerprint, and return the existing donation. The PayPal order created by the losing request is never used.
+
+### API gaps (not defects, missing capabilities)
+- **G-6, G-7:** implemented in `967781d` (`GET /beneficiaries/me/campaigns`, `GET /campaigns/review-queue`); tests in `tests/integration/test_beneficiary_and_review_queues.py`.
+- **G-8 (still open, low):** no lookup by `slug`; the public listing stops at 50 results without pagination; donation and payout payloads have no timestamps (`created_at`). Campaign payloads now carry them only on the beneficiary list.
+
+### Migration chain
+The head is `e4a6c8d9f012` (after the messaging tables, `c3f1a9e7d2b4`). Chain new migrations after it; `test_single_alembic_head` guards this.
 
 ## For Cursor (frontend)
 
-Start from `contracts/`. Run `npm ci && npm test` there to type-check and run the offline tests.
+`feat/frontend-core` has not been published, so nothing here has been checked against it. Start from `contracts/` (see `contracts/README.md` for how to consume it). Run `npm ci && npm test` there to type-check and run the offline tests.
 
-- `fundbridge-client.ts`: typed client with `completePayPalReturn` (capture, then reconcile if ambiguous, then re-read), `presentDonation`/`presentPayout`, `channelModes`, AI, staff and simulator calls. Verified against the live API.
+- `fundbridge-client.ts`: typed client with `completePayPalReturn` (capture, then reconcile the same donation id if ambiguous, then re-read; outcomes `confirmed`, `failed`, `not_approved`, `provider_unavailable`, `needs_review`, `pending`), `presentDonation`/`presentPayout`, `channelModes`, AI, staff and simulator calls. Verified against the live API.
 - `examples.ts`: type-checked patterns for async states, the PayPal return page, payout rows, AI suggestions that never block the form, keyword-first search, channel banners, the labelled simulator and stale-review handling.
+- **Please run the browser walkthrough** in `docs/integration/FRONTEND_WALKTHROUGH.md` (donor, creator, reviewer and beneficiary on the seeded demo data) and record the results there or in your PR.
 - Docs: `docs/integration/operations-and-frontend.md` (screen map, the loading/pending/failure/success table, error codes), `ai-messaging-api.md`, `openai.md`, `africastalking.md`.
 
 Non-negotiable: donation success only from the server (`completed`); payout success only for `succeeded`, and no live payout provider exists, so approved is never shown as paid; label simulated channels; AI failures never block non-AI paths.
 
 ## Owner decisions and external prerequisites
+
+Step-by-step checks and the evidence to record for each provider: `EXTERNAL_CHECKLIST.md`.
 
 1. **OpenAI:** an API key; confirm the model (default `gpt-5.4-mini`, unverified; see `openai.md`) and the event's AI rules; then run `flask fundbridge-ai check`.
 2. **Africa's Talking:** an account, the sandbox app and API key; then for production, KYC, a two-way shortcode and a USSD service code (telco approval). See `africastalking.md` for the procedure.

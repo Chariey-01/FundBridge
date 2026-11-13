@@ -20,6 +20,7 @@ def init_integrations(flask_app: Flask) -> None:
         SqlBeneficiaryDirectory,
         SqlCampaignCatalog,
         SqlMessagingStore,
+        SqlStatusReader,
         jwt_actor_resolver,
         jwt_auth_failure,
     )
@@ -38,7 +39,8 @@ def init_integrations(flask_app: Flask) -> None:
     flask_app.extensions[AUTH_FAILURE_EXTENSION] = jwt_auth_failure
 
     catalog = SqlCampaignCatalog()
-    ai_service = init_ai(flask_app, actor_resolver=jwt_actor_resolver, campaign_catalog=catalog)
+    ai_service = init_ai(flask_app, actor_resolver=jwt_actor_resolver, campaign_catalog=catalog,
+                         status_reader=SqlStatusReader())
     init_messaging(
         flask_app,
         directory=SqlBeneficiaryDirectory(_setting(flask_app, "MESSAGING_DEFAULT_COUNTRY", "KE")),

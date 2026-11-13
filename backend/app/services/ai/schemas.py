@@ -92,6 +92,12 @@ class CampaignSearchRequest(_Request):
     limit: int = Field(default=10, ge=1, le=20)
 
 
+class StatusExplanationRequest(_Request):
+    kind: Literal["donation", "payout"]
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9-]+$")
+    language: LanguageCode = "en"
+
+
 # ---------------------------------------------------------------------------
 # Provider output models. Validated after every model call; anything that does
 # not fit is treated as a provider failure and the deterministic fallback runs.
@@ -119,6 +125,10 @@ class AssistantOutput(_Output):
     reply: str = Field(min_length=1, max_length=1500)
     suggested_actions: list[AssistantAction] = Field(default_factory=list, max_length=3)
     escalate_to_human: bool
+
+
+class StatusExplanationOutput(_Output):
+    explanation: str = Field(min_length=1, max_length=1500)
 
 
 class SearchOutput(_Output):
@@ -199,4 +209,9 @@ SEARCH_JSON_SCHEMA = _strict_object(
         "keywords": "Up to 6 short English search keywords.",
         "country_code": "ISO 3166-1 alpha-2 code if the query names a country, otherwise null.",
     },
+)
+
+STATUS_EXPLANATION_JSON_SCHEMA = _strict_object(
+    {"explanation": {"type": "string"}},
+    descriptions={"explanation": "Plain-language explanation in the requested language, at most 500 characters."},
 )
