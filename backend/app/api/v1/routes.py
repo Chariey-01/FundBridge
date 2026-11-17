@@ -1,7 +1,7 @@
 import re, hashlib, json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, abort, current_app, g, jsonify, request
 from flask_jwt_extended import create_access_token
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_, text
