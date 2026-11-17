@@ -204,3 +204,40 @@ Deployment steps are ready in `docs/DEPLOYMENT.md` and `docs/RELEASE_CHECKLIST.m
 
 Raw outputs, the audit scripts and screenshots were kept outside the repository (they contain test tokens). The
 results that matter are summarised above. The audit tests in §2.1 reproduce AUD-1 to AUD-6 in CI.
+
+## 8. Status update, 2026-11-17 (re-verified on `feat/backend-core` @ `28141e0`)
+
+This section supersedes the gate result in §5 where they differ. Every result was re-run, none carried over.
+
+- **AUD-1 (payout review race): fixed in `941766c`.**
+  - Evidence: the deterministic test here passes 10/10 and the backend's own race test passes 30/30. In 50 live HTTP races, each pair ended with exactly one 200 and one 400.
+  - The ledger audit found every payout reserved once and released only when rejected.
+  - A control run on the old code fails.
+  - Its strict-xfail marker is removed, so the test now guards against regression.
+- **AUD-2 (login without an identifier): fixed in `941766c`.** Nine live variants all return 401 without a token. The test now covers three payloads as a regression test.
+- **Regression introduced by the AUD-1 fix:** reviewing an unknown payout ID returned 500 (`abort` not imported). It is fixed in PR #11 with a regression test.
+- **Frontend:** PR #10 was merged into `feat/backend-core`. Browser journeys pass 30/30 (desktop and mobile) against the live API on PostgreSQL 16.
+- **Not production-ready by design:**
+  - Payouts use the simulator and never reach a mobile-money account.
+  - PayPal has been exercised only against the local test double, never PayPal Sandbox.
+  - SMS uses the simulator.
+
+### Priorities for the remaining findings
+
+| Priority | ID | Area | Finding | Owner | Test |
+|---|---|---|---|---|---|
+| P0 before real money | FIN-1 (new) | Financial integrity | PayPal `PAYMENT.CAPTURE.REFUNDED` and `PAYMENT.CAPTURE.REVERSED` webhooks return 204 and are stored as processed, but nothing changes: the donation stays `completed` and the amount stays in `available`, so refunded or charged-back money can be paid out. Reproduced in-process. Until handled, such events must not be acknowledged as processed | Codex | none yet |
+| P0 before real money | FIN-2 | Payouts | No payout provider: approved payouts stop at `approved_for_submission`. Simulated only | Owner decision | covered |
+| P0 before real money | PAY-1 | Reconciliation | Real PayPal Sandbox is untested end to end. The `approval_url` on idempotent replay is inconclusive (the test double returns no links on GET order) | Owner (credentials) | partial |
+| P0 before deploy | AUD-7 | Data integrity | Production silently falls back to SQLite when `DATABASE_URL` is unset; `/health` does not touch the database | Codex | none |
+| P0 before deploy | OPS-1 | Authentication | `TRUSTED_PROXY_HOPS` defaults to 0, so behind a proxy the per-IP limits on login, registration and orders become global. A wrong non-zero value makes them spoofable | Owner + Codex | none |
+| P1 | AUD-8 | Beneficiary verification | A campaign for an unverified beneficiary can be published and take donations (payouts are blocked until verification) | Owner decision, then Codex | none |
+| P1 | AUD-4 | Authentication | A non-string email at registration returns 500 | Codex | strict xfail |
+| P1 | AUD-5 | Authentication | Emails are case-sensitive, so case variants create separate accounts | Codex | strict xfail |
+| P1 | AUD-12 | Authentication | No logout or token revocation, refresh, or password reset | Owner + Codex | none |
+| P1 | AUD-3 | Integrity | Campaign edits skip the create validation; an over-long title returns 500 on PostgreSQL | Codex | strict xfail |
+| P1 | AUD-11 | Truthful labelling | `/public/config` reports PayPal `sandbox` for any configured client ID, including a local stand-in | Codex | none |
+| P1 | PRIV-1 | Privacy | Any creator can list up to 100 beneficiary names and countries without a query | Owner decision | none |
+| P2 | AUTH-3 | Authentication | Login matches the identifier against both the email and phone columns and takes the first row | Codex | none |
+| P2 | AUD-6, AUD-9, AUD-10 | Validation and UX | Email format, rejection reason, receipts | Codex | AUD-6 strict xfail |
+| P2 | OPS-2 | Operations | No `pool_pre_ping`; single-origin CORS; unpinned dependencies; `pytest` in runtime requirements | Codex | none |
