@@ -57,6 +57,16 @@ def test_role_assignment_guards(client, seeded):
     assert client.get("/api/v1/admin/users?email=creator@example.test", headers=reviewer).status_code == 403
 
 
+def test_creator_can_lookup_campaign_beneficiaries_without_private_fields(client, seeded):
+    creator = auth(client, "creator@example.test")
+    result = client.get("/api/v1/beneficiaries/lookup?q=Amina", headers=creator)
+    assert result.status_code == 200
+    row = result.get_json()["data"]
+    assert row == [{"id": seeded["beneficiary"].id, "display_name": "Amina", "country_code": "KE",
+                    "verification_status": "verified"}]
+    assert client.get("/api/v1/beneficiaries/lookup", headers=auth(client, "beneficiary@example.test")).status_code == 403
+
+
 # --------------------------------------------------------- beneficiary verification
 
 

@@ -50,6 +50,15 @@ test("PayPal return is confirmed only when the server re-read says completed", a
   assert.deepEqual(seen, ["POST /api/v1/donations/d1/capture", "GET /api/v1/donations/d1"]);
 });
 
+test("client passes a string URL to injected fetch implementations", async () => {
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    assert.equal(typeof input, "string");
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  }) as typeof fetch;
+  const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fetchImpl, token: "test" });
+  assert.deepEqual(await client.findCampaignBeneficiaries("Amina"), []);
+});
+
 test("PayPal return before approval reports not_approved and stays pending", async () => {
   const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
     "POST /api/v1/donations/d1/capture": { status: 502, body: { error: { code: "PROVIDER_REQUEST_REJECTED", message: "x", details: { provider_status: 422, provider_issue: "ORDER_NOT_APPROVED" } } } },
