@@ -26,12 +26,16 @@ PG_URL = os.environ.get("POSTGRES_TEST_DATABASE_URL") or os.environ.get("FUNDBRI
 # ---------------------------------------------------------------- AUD-2 authentication
 
 
-@pytest.mark.xfail(strict=True, reason="AUD-2: login without email/phone matches 'email IS NULL OR phone IS NULL' "
-                                       "and signs in as the first such account (routes.py login)")
-def test_login_without_an_identifier_is_rejected(client, app):
+@pytest.mark.parametrize("payload", [
+    {"password": PASSWORD},
+    {"email": "   ", "password": PASSWORD},
+    {"phone_number": "", "password": PASSWORD},
+])
+def test_login_without_an_identifier_is_rejected(client, app, payload):
     make_user("admin@example.test", Role.admin)
-    res = client.post("/api/v1/auth/login", json={"password": PASSWORD})
+    res = client.post("/api/v1/auth/login", json=payload)
     assert res.status_code == 401, res.get_json()
+    assert "access_token" not in res.get_json().get("data", {})
 
 
 @pytest.mark.xfail(strict=True, reason="AUD-4: non-string email reaches the database and returns 500 "
@@ -88,9 +92,6 @@ def test_campaign_edit_rejects_an_overlong_title_with_400(client, seeded):
 
 
 @pytest.mark.skipif(not PG_URL, reason="set POSTGRES_TEST_DATABASE_URL to an isolated PostgreSQL test database")
-@pytest.mark.xfail(strict=True, reason="AUD-1: review_payout reads the payout without a row lock, so a concurrent "
-                                       "approve and reject both succeed; the payout can end approved while its "
-                                       "reservation is released (routes.py review_payout)")
 def test_concurrent_approve_and_reject_cannot_both_succeed(monkeypatch):
     """Deterministic interleaving: both requests are held after their status check, just before commit.
 
