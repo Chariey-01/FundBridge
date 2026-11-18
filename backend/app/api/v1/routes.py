@@ -277,7 +277,9 @@ def paypal_webhook():
         if not isinstance(related,dict): raise ValueError("INVALID_WEBHOOK_EVENT")
         order_id=related.get("order_id")
         capture_id=related.get("capture_id") or (resource.get("id") if event_type == "PAYMENT.CAPTURE.REVERSED" else None)
-        d=Donation.query.filter_by(provider_order_id=order_id).first()
+        # Serialize distinct partial-refund events for one capture. Without this lock,
+        # two webhooks can both observe the same prior debit total and over-reverse it.
+        d=Donation.query.filter_by(provider_order_id=order_id).with_for_update().first()
         if not d: raise ValueError("PAYMENT_ORDER_MISMATCH")
         provider_amount=resource.get("amount") or {}
         if provider_amount.get("currency_code") != d.currency: raise ValueError("PAYMENT_CURRENCY_MISMATCH")
