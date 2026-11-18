@@ -100,7 +100,6 @@ def _start_stack(tmp: Path, db_url: str, extra_env: dict | None = None):
     if db_url.startswith("postgresql"):
         _reset_postgres(db_url)
     paypal = PayPalDouble("e2e-paypal-client", "e2e-paypal-secret", "WH-E2E-0001").start()
-    paypal.assume_representation = True  # C-4b accommodation; see PayPalDouble and COORDINATION.md
     openai_key = "sk-e2e-" + secrets.token_hex(8)
     openai = OpenAIDouble(openai_key).start()
     port = _free_port()
@@ -147,19 +146,25 @@ def _start_stack(tmp: Path, db_url: str, extra_env: dict | None = None):
         cmd = flask + ["run", "--port", str(port), "--with-threads"]
     server = subprocess.Popen(cmd, cwd=BACKEND, env=env, stdout=log_file, stderr=subprocess.STDOUT)
     base = f"http://127.0.0.1:{port}"
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        try:
-            if requests.get(base + "/health", timeout=5).status_code == 200:
-                break
-        except requests.RequestException:  # not listening yet, or the worker is still importing the app
-            time.sleep(0.3)
-    else:
+    try:  # never leave an orphaned server behind if startup fails
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                if requests.get(base + "/health", timeout=5).status_code == 200:
+                    break
+            except requests.RequestException:  # not listening yet, or the worker is still importing the app
+                time.sleep(0.3)
+        else:
+            raise RuntimeError("API server did not start:\n" + log_path.read_text())
+        harness = Live(base=base, env=env, paypal=paypal, openai=openai, log_path=log_path)
+        harness.admin_token = harness.login(ADMIN_EMAIL)
+    except BaseException:
         server.terminate()
-        raise RuntimeError("API server did not start:\n" + log_path.read_text())
-
-    harness = Live(base=base, env=env, paypal=paypal, openai=openai, log_path=log_path)
-    harness.admin_token = harness.login(ADMIN_EMAIL)
+        server.wait(timeout=10)
+        log_file.close()
+        paypal.stop()
+        openai.stop()
+        raise
 
     def stop():
         server.terminate()

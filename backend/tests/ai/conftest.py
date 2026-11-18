@@ -47,7 +47,8 @@ def sample_catalog() -> InMemoryCampaignCatalog:
     )
 
 
-def make_app(provider: Any = None, *, config: dict | None = None, recorder: Callable | None = None) -> Flask:
+def make_app(provider: Any = None, *, config: dict | None = None, recorder: Callable | None = None,
+             status_reader: Any = None) -> Flask:
     app = Flask(__name__)
     app.config.update(TESTING=True, SECRET_KEY="test-secret", **(config or {}))
 
@@ -59,7 +60,7 @@ def make_app(provider: Any = None, *, config: dict | None = None, recorder: Call
         return Actor(actor_id, role or "creator")
 
     init_ai(app, actor_resolver=resolver, campaign_catalog=sample_catalog(), provider=provider,
-            interaction_recorder=recorder)
+            interaction_recorder=recorder, status_reader=status_reader)
     return app
 
 

@@ -233,3 +233,19 @@ def test_simulated_gateway_labels_messages(world):
     _, _, _, gateway = world
     result = gateway.send(PHONE, "hi")
     assert result.status == "simulated" and result.message_id.startswith("SIM-")
+
+
+def test_abandoned_or_timed_out_session_leaves_no_partial_state(world):
+    """USSD sessions are stateless on the server: each callback carries the whole input so far (Africa's Talking
+    format), and the telco ends idle sessions. A session dropped mid-PIN-setup must not leave a half-created PIN,
+    and a new session starts again from the main menu."""
+    service, *_ = world
+    assert "Enter the same PIN" in service.handle_ussd(phone_number=PHONE, text="2*4826", session_id="dropped").text
+    # The handset times out here. A new session (new sessionId, empty text) starts fresh.
+    fresh = service.handle_ussd(phone_number=PHONE, text="", session_id="new-session")
+    assert not fresh.end and fresh.text.startswith("FundBridge")
+    again = service.handle_ussd(phone_number=PHONE, text="2", session_id="new-session")
+    assert "Create a 4-digit PIN" in again.text  # nothing was saved by the abandoned session
+    # Continuing within a session works from the cumulative text, without server-side session storage.
+    assert "USD 100.00" in service.handle_ussd(phone_number=PHONE, text="2*4826*4826", session_id="new-session").text
+    assert "Enter your 4-digit" in service.handle_ussd(phone_number=PHONE, text="2", session_id="third").text

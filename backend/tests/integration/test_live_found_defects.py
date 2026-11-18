@@ -31,6 +31,7 @@ def test_creator_can_create_campaign_through_the_api(client, seeded):
 
 
 def test_assisted_onboarding_is_audited(client, seeded):
+    """C-3, and X-1 (duplicate audit row after the PR #3 merge) fixed in feat/backend-core b45ee29: exactly one row."""
     res = client.post("/api/v1/beneficiaries", headers=auth(client, "agent@example.test"),
                       json={"display_name": "Otieno", "phone_number": "+254711222333", "country_code": "KE"})
     assert res.status_code == 201
@@ -74,7 +75,9 @@ def _order_through(client, seeded, monkeypatch, response_for):
 
 def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monkeypatch):
     """C-4: the PayPal order was created before the donation had an id, so reference_id was None and every capture
-    failed the reference check. Fixed in feat/backend-core b7bf45b (flush before the provider call)."""
+    failed the reference check. Fixed in feat/backend-core b7bf45b (flush before the provider call). C-4b (the
+    create-order response lacked purchase_units without "Prefer: return=representation") is fixed in b45ee29 and
+    covered over HTTP by tests/e2e/test_journeys.py::test_order_creation_against_paypal_default_response."""
     def representation(donation):  # what PayPal returns with "Prefer: return=representation"
         return {"id": "ORDER-REF-1", "status": "CREATED", "links": [{"rel": "approve", "href": "https://pp/approve"}],
                 "purchase_units": [{"reference_id": donation.id, "amount": {"currency_code": "USD", "value": "10.00"}}]}
@@ -85,6 +88,7 @@ def test_paypal_order_carries_the_donation_id_as_reference(client, seeded, monke
 
 
 def test_keyword_search_matches_category_as_ported(client, seeded):
+    """X-2 regression: the duplicated ?q= filters were merged into one escaped title/description/category filter (4bae876)."""
     # The seeded campaign is category "education"; neither its title nor description contains that word.
     res = client.get("/api/v1/campaigns?q=education")
     assert [c["title"] for c in res.get_json()["data"]] == ["School fees for Amina"]

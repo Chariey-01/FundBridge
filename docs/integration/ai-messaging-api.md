@@ -27,7 +27,9 @@ Authentication is the core backend's JWT: `Authorization: Bearer <access_token>`
     "ai": {
       "provider": "fallback", "model": null, "mode": "fallback_only",
       "features": { "campaign_draft": "template_fallback", "translate": "unavailable",
-                    "beneficiary_assistant": "rule_based_fallback", "campaign_search": "keyword_fallback" },
+                    "beneficiary_assistant": "rule_based_fallback", "campaign_search": "keyword_fallback",
+                    "status_explanation": "verified_text_only" },
+      "daily_request_limit": 2000,
       "supported_languages": { "en": "English", "sw": "Kiswahili", "...": "..." },
       "model_verified": false, "last_success_at": null, "last_error": null
     },
@@ -44,8 +46,8 @@ Authentication is the core backend's JWT: `Authorization: Bearer <access_token>`
 
 ## AI endpoints
 
-Rate limits: 10/min per signed-in user, 20/min per IP for anonymous calls (`429 RATE_LIMITED`, `Retry-After` header).
-Errors: `400 VALIDATION_ERROR` (with `details`), `401 AUTH_REQUIRED` / `INVALID_TOKEN` / `TOKEN_EXPIRED` and `403 ACCOUNT_INACTIVE` (same codes as the core API), `413 PAYLOAD_TOO_LARGE`, `429 RATE_LIMITED`, `503 AI_UNAVAILABLE` (translation only).
+Rate limits: 10/min per signed-in user, 20/min per IP for anonymous calls (`429 RATE_LIMITED`, `Retry-After` header). `AI_DAILY_REQUEST_LIMIT` (default 2000 provider calls per UTC day per process) switches to the fallbacks when reached.
+Errors: `400 VALIDATION_ERROR` (with `details`), `401 AUTH_REQUIRED` / `INVALID_TOKEN` / `TOKEN_EXPIRED` and `403 ACCOUNT_INACTIVE` (same codes as the core API), `403 FORBIDDEN` / `404 NOT_FOUND` (status explanation), `413 PAYLOAD_TOO_LARGE`, `429 RATE_LIMITED`, `503 AI_UNAVAILABLE` (translation only).
 
 Every success has `meta`: `{ "provider": "openai" | "fallback" | "none", "model": string | null, "ai_generated": bool, "degraded": bool, "fallback_reason"?: string }`. `degraded: true` means a configured provider failed and the fallback answered.
 
@@ -64,7 +66,7 @@ Response `data`:
   "missing_information": ["School name"], "warnings": ["…"], "language": "en",
   "requires_human_review": true, "disclaimer": "AI-assisted draft. …" }
 ```
-`warnings` covers removed contact details, removed links, claims that money moved or that FundBridge verified something, guarantees, and amounts that differ from the goal.
+`warnings` covers removed contact details, removed links, claims that money moved or that FundBridge verified something, guarantees, and amounts that differ from the goal. When AI is unavailable (`meta.ai_generated: false`), `disclaimer` says the text is a template built from the notes, not an AI draft. Keep the creator's original notes in the form either way.
 
 ### `POST /ai/translate` (public, IP-limited when anonymous)
 
@@ -80,7 +82,7 @@ Response `data`:
 { "reply": "…", "language": "sw", "suggested_actions": ["view_payout_status"],
   "escalate_to_human": false, "notice": "This assistant cannot see or change balances, …" }
 ```
-`suggested_actions` ⊂ `view_campaign_status, view_payout_status, contact_community_agent, edit_campaign_draft, verify_phone_number, learn_about_fees, learn_about_payouts, learn_about_donating`. They are navigation hints only. If `escalate_to_human` is true, show the agent contact path prominently. `meta.output_replaced_by_guardrail: true` means the model's reply asserted a financial outcome and was replaced.
+When AI is unavailable, `notice` starts "AI is unavailable, so this is a standard answer." `suggested_actions` ⊂ `view_campaign_status, view_payout_status, contact_community_agent, edit_campaign_draft, verify_phone_number, learn_about_fees, learn_about_payouts, learn_about_donating`. They are navigation hints only. If `escalate_to_human` is true, show the agent contact path prominently. `meta.output_replaced_by_guardrail: true` means the model's reply asserted a financial outcome and was replaced.
 
 ### `POST /ai/campaign-search` (public)
 
@@ -93,7 +95,26 @@ Response `data`:
                  "goal": { "amount": "400.00", "currency": "USD" },
                  "raised": { "amount": "25.50", "currency": "USD" } } ] }
 ```
-Only published campaigns. `raised` is summed from confirmed ledger entries; pending donations are not counted.
+Only published campaigns. `raised` is summed from confirmed ledger entries; pending donations are not counted. `notice` is `null` when AI interpreted the query, otherwise "AI search is unavailable, so results use simple keyword matching."
+
+### `POST /ai/status-explanation` (signed in)
+
+Explains one donation or payout in plain language **from FundBridge's own record**. It is read-only: nothing it returns or does can change a status, an amount or the ledger. Access is exactly that of `GET /donations/{id}` (the donor, reviewers, admins) and `GET /payouts/{id}` (the payout's own beneficiary, reviewers, admins): `403 FORBIDDEN` otherwise, `404 NOT_FOUND` for an unknown id.
+
+Request: `{ "kind": "donation" | "payout", "id": "<uuid>", "language": "sw" }`.
+Response `data`:
+```json
+{ "kind": "payout", "id": "…", "status": "approved_for_submission", "status_label": "Approved, being prepared",
+  "confirmed": false, "final": false, "amount": { "amount": "40.00", "currency": "USD" },
+  "campaign_title": "School fees for Amina", "campaign_raised": null, "as_of": "2026-11-11T10:00:00+00:00",
+  "explanation": "…", "language": "en",
+  "verified_text": "Your payout of 40.00 USD from \"School fees for Amina\" is approved and being prepared. It has not been sent to the mobile-money provider yet, so the money has not arrived.",
+  "verified_text_language": "en", "notice": "…", "source": "backend_record" }
+```
+- Render the status badge from `status_label` and `confirmed`; `confirmed` is true only for donation `completed` and payout `succeeded`. The `explanation` is supporting text.
+- `verified_text` is FundBridge's deterministic wording, in English or Kiswahili. When AI is live, `explanation` is the model's rewording (en/sw) or translation (other languages). If the model's text contradicts the record, it is replaced by `verified_text`, and `meta.output_replaced_by_guardrail` and `meta.guardrail_reason` say so.
+- Without AI, `explanation` equals `verified_text`. For languages other than English and Kiswahili it is in English, and `language` says `en`.
+- `campaign_raised` (donations only) is the campaign's ledger-backed confirmed total.
 
 ### `GET /ai/status` (public)
 
@@ -111,11 +132,11 @@ Same as `data.ai` in `/integrations/status`.
 
 Retries are safe: an inbound SMS with an `id` already processed gets no second reply; a repeated USSD PIN step (same `sessionId` and `text`) is not counted as another wrong attempt; repeated help requests within 30 minutes return the same reference. Gateway setup and testing: `africastalking.md`.
 
-The token can also be sent as `X-FundBridge-Callback-Token`. A wrong token returns `403 INVALID_CALLBACK`; no configured token returns `503 MESSAGING_NOT_CONFIGURED`.
+The token can also be sent as `X-FundBridge-Callback-Token`. A wrong token returns `403 INVALID_CALLBACK`; no configured token, or one shorter than 24 characters, returns `503 MESSAGING_NOT_CONFIGURED`.
 
 Every screen is GSM 7-bit text of at most 182 characters (long titles are shortened; search may show fewer than three results). Options 1 and 2 answer only numbers on a **verified** beneficiary profile; after a phone or payout-destination change the number gets "waiting for verification, contact your agent" until a reviewer re-verifies it.
 
-USSD menu (English and Kiswahili; `0` back, `00` home):
+USSD menu (English and Kiswahili; `0` back, `00` home). The Kiswahili text awaits native-speaker review: `kiswahili-review.md`.
 
 ```
 1. My campaign        -> status and confirmed raised total (from the ledger)

@@ -90,3 +90,54 @@ class InMemoryCampaignCatalog:
             scored.append((-score, index, campaign))
         scored.sort(key=lambda item: (item[0], item[1]))
         return [c for _, _, c in scored[:limit]]
+
+
+# ------------------------------------------------------------------ authoritative status (read-only)
+
+
+class StatusLookupError(Exception):
+    """``code`` is NOT_FOUND or FORBIDDEN, with the same meaning as the core GET /donations|payouts/{id}."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class StatusFacts:
+    """A read-only snapshot of one donation or payout, taken from the core backend's records.
+
+    The AI layer only ever receives this copy. It has no handle on the record, the ledger or any
+    provider, so nothing it produces can change a status.
+    """
+
+    kind: str  # "donation" | "payout"
+    record_id: str
+    status: str  # the backend's own status value, copied verbatim
+    amount: Money
+    campaign_title: str
+    campaign_raised: Money | None  # ledger-backed confirmed total of the campaign
+    channel: str  # "paypal" | "demo_seed" | "simulator" | ... (provider label, never an id)
+    updated_at: str | None
+
+
+class StatusReader(Protocol):
+    def read(self, actor: Actor, kind: str, record_id: str) -> StatusFacts:
+        """Return the facts the caller may see, or raise StatusLookupError(NOT_FOUND|FORBIDDEN)."""
+        ...
+
+
+@dataclass
+class InMemoryStatusReader:
+    """Test double. ``owners`` maps record id -> the actor ids allowed to read it."""
+
+    facts: dict[str, StatusFacts] = field(default_factory=dict)
+    owners: dict[str, set[str]] = field(default_factory=dict)
+
+    def read(self, actor: Actor, kind: str, record_id: str) -> StatusFacts:
+        fact = self.facts.get(record_id)
+        if fact is None or fact.kind != kind:
+            raise StatusLookupError("NOT_FOUND")
+        if actor.id not in self.owners.get(record_id, set()) and actor.role not in ("admin", "reviewer"):
+            raise StatusLookupError("FORBIDDEN")
+        return fact

@@ -21,13 +21,22 @@ from app.models.core import (
     BeneficiaryProfile,
     Campaign,
     CampaignStatus,
+    Donation,
     FinancialLedgerEntry,
     Payout,
     ProviderWebhookEvent,
+    Role,
     User,
 )
 from app.models.messaging import MessagingPinCredential, MessagingPreference, SupportRequest
-from app.services.ai.ports import Actor, Money, PublicCampaignSummary, SearchFilters
+from app.services.ai.ports import (
+    Actor,
+    Money,
+    PublicCampaignSummary,
+    SearchFilters,
+    StatusFacts,
+    StatusLookupError,
+)
 from app.services.messaging.phone import phone_variants
 from app.services.messaging.ports import (
     BeneficiaryRecord,
@@ -103,6 +112,46 @@ def jwt_auth_failure() -> tuple[str, str, int]:
         return "INVALID_TOKEN", "Authentication is invalid.", 401
     # A valid token whose user no longer exists or is not active (core: PermissionError ACCOUNT_INACTIVE).
     return "ACCOUNT_INACTIVE", "You are not authorized to perform this action.", 403
+
+
+class SqlStatusReader:
+    """Read-only facts for ``POST /ai/status-explanation``.
+
+    Access mirrors the core routes exactly: ``GET /donations/{id}`` (the donor, reviewers, admins) and
+    ``GET /payouts/{id}`` (the payout's own beneficiary, reviewers, admins). Only SELECTs; no session writes.
+    """
+
+    def read(self, actor: Actor, kind: str, record_id: str) -> StatusFacts:
+        staff = actor.role in (Role.admin.value, Role.reviewer.value)
+        if kind == "donation":
+            record = db.session.get(Donation, record_id)
+            if record is None:
+                raise StatusLookupError("NOT_FOUND")
+            if record.donor_id != actor.id and not staff:
+                raise StatusLookupError("FORBIDDEN")
+        elif kind == "payout":
+            record = db.session.get(Payout, record_id)
+            if record is None:
+                raise StatusLookupError("NOT_FOUND")
+            if not staff:
+                profile = BeneficiaryProfile.query.filter_by(user_id=actor.id).first()
+                if profile is None or profile.id != record.beneficiary_id:
+                    raise StatusLookupError("FORBIDDEN")
+        else:
+            raise StatusLookupError("NOT_FOUND")
+        campaign = db.session.get(Campaign, record.campaign_id)
+        raised = raised_total(campaign.id, campaign.goal_currency) if campaign is not None and kind == "donation" else None
+        updated = getattr(record, "updated_at", None)
+        return StatusFacts(
+            kind=kind,
+            record_id=record.id,
+            status=_value(record.status),
+            amount=Money(f"{Decimal(record.amount):.2f}", record.currency),
+            campaign_title=campaign.title if campaign is not None else "",
+            campaign_raised=raised,
+            channel=str(record.provider or ""),
+            updated_at=updated.isoformat() if updated else None,
+        )
 
 
 class SqlCampaignCatalog:

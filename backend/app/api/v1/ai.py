@@ -13,14 +13,22 @@ from pydantic import BaseModel, ValidationError
 
 from app.integrations.ai.factory import build_ai_provider
 from app.integrations.http_envelope import error, ok, unauthenticated, validation_details
-from app.services.ai.ports import Actor, ActorResolver, CampaignCatalog
+from app.services.ai.ports import Actor, ActorResolver, CampaignCatalog, StatusReader
 from app.services.ai.schemas import (
     AssistantRequest,
     CampaignDraftRequest,
     CampaignSearchRequest,
+    StatusExplanationRequest,
     TranslateRequest,
 )
-from app.services.ai.service import AIConfig, AIService, AIUnavailableError, InteractionRecorder, RateLimitedError
+from app.services.ai.service import (
+    AIConfig,
+    AIService,
+    AIUnavailableError,
+    InteractionRecorder,
+    RateLimitedError,
+    StatusNotAvailable,
+)
 
 bp = Blueprint("fundbridge_ai", __name__)
 
@@ -35,6 +43,7 @@ def init_ai(
     *,
     actor_resolver: ActorResolver,
     campaign_catalog: CampaignCatalog,
+    status_reader: StatusReader | None = None,
     provider: Any = _UNSET,
     interaction_recorder: InteractionRecorder | None = None,
     url_prefix: str = "/api/v1/ai",
@@ -43,15 +52,20 @@ def init_ai(
         provider = build_ai_provider(app.config)
 
     def setting(key: str, default: int) -> int:
-        return int(app.config.get(key) or os.environ.get(key) or default)
+        for value in (app.config.get(key), os.environ.get(key)):
+            if value not in (None, ""):
+                return int(value)
+        return default
 
     service = AIService(
         provider,
         campaign_catalog=campaign_catalog,
+        status_reader=status_reader,
         config=AIConfig(
             user_rate_limit_per_minute=setting("AI_RATE_LIMIT_PER_MINUTE", 10),
             public_rate_limit_per_minute=setting("AI_PUBLIC_RATE_LIMIT_PER_MINUTE", 20),
             safety_id_salt=app.config.get("SECRET_KEY") or None,
+            daily_request_limit=setting("AI_DAILY_REQUEST_LIMIT", 2000),
         ),
         interaction_recorder=interaction_recorder,
     )
@@ -101,6 +115,10 @@ def _run(fn: Callable[[], dict], rate_key: str, *, public: bool):
         )
     except AIUnavailableError as exc:
         return error("AI_UNAVAILABLE", str(exc), 503)
+    except StatusNotAvailable as exc:
+        if exc.code == "FORBIDDEN":
+            return error("FORBIDDEN", "You are not authorized to perform this action.", 403)
+        return error("NOT_FOUND", "Resource not found.", 404)
     return ok(result["data"], result["meta"])
 
 
@@ -157,3 +175,15 @@ def campaign_search():
         return err
     key, public = (f"user:{actor.id}", False) if actor else (_client_key(), True)
     return _run(lambda: _service().campaign_search(actor.id if actor else key, req), key, public=public)
+
+
+@bp.post("/status-explanation")
+def status_explanation():
+    """Explain one donation or payout the caller may already see, from the backend's record. Read-only."""
+    actor, err = _require_actor()
+    if err:
+        return err
+    req, err = _parse(StatusExplanationRequest)
+    if err:
+        return err
+    return _run(lambda: _service().explain_status(actor, req), f"user:{actor.id}", public=False)

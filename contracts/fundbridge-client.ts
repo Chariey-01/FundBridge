@@ -188,7 +188,9 @@ export class FundBridgeClient {
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
-    this.fetchImpl = options.fetch ?? fetch;
+    // Call the default fetch on globalThis: browsers throw "Illegal invocation" when window.fetch runs
+    // with the client as `this`. An injected fetch is used as given.
+    this.fetchImpl = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.token = options.token ?? null;
     this.onSessionInvalid = options.onSessionInvalid;
   }

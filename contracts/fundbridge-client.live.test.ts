@@ -47,6 +47,17 @@ test("donor journey through the client: browse, donate via PayPal, confirm from 
   const after = (await client.campaignFunds(campaign.id)).balance.raised;
   assert.equal(cents(after) - cents(before), 750n);
   assert.ok((await client.myDonations()).some((d) => d.id === order.id && d.status === "completed"));
+
+  // AI explanation of the same donation, from the server's record (works with or without a model).
+  const { explanation, meta } = await client.explainStatus({ kind: "donation", id: order.id, language: "sw" });
+  assert.equal(explanation.status, "completed");
+  assert.equal(explanation.confirmed, true);
+  assert.deepEqual(explanation.amount, { amount: "7.50", currency: "USD" });
+  assert.equal(explanation.verified_text_language, "sw");
+  assert.equal(typeof meta.ai_generated, "boolean");
+  const detail = await client.getCampaign(campaign.id);
+  assert.equal(detail.raised.amount, after);
+  assert.equal(detail.beneficiary_id, undefined); // donors never see the beneficiary id
   assert.deepEqual(sessionErrors, []);
 });
 
@@ -75,6 +86,12 @@ test("beneficiary sees server payout status and labelled simulated channels", as
   const payout = await client.getPayout(env("FB_PAYOUT_ID"));
   assert.equal(payout.status, "approved_for_submission");
   assert.equal(presentPayout(payout.status).tone, "pending"); // approved is not paid
+  const mine = await client.beneficiaryCampaigns();
+  assert.ok(mine.items.some((c) => c.id === payout.campaign_id) && mine.page.total >= 1);
+  const { explanation } = await client.explainStatus({ kind: "payout", id: payout.id });
+  assert.equal(explanation.status, "approved_for_submission");
+  assert.equal(explanation.confirmed, false);
+  assert.match(explanation.verified_text, /has not been sent/);
   const funds = await client.campaignFunds(payout.campaign_id);
   assert.equal(funds.visibility, "full");
   assert.ok(funds.balance.available !== undefined && funds.balance.reserved_for_payouts !== undefined);

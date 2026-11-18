@@ -59,6 +59,23 @@ test("client passes a string URL to injected fetch implementations", async () =>
   assert.deepEqual(await client.findCampaignBeneficiaries("Amina"), []);
 });
 
+test("the default fetch is called on globalThis, as browsers require", async () => {
+  // Browsers throw "Illegal invocation" when window.fetch runs with any other `this`.
+  const original = globalThis.fetch;
+  globalThis.fetch = function (this: unknown, input: URL | RequestInfo) {
+    if (this !== globalThis && this !== undefined) throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+    assert.equal(String(input), "http://api/api/v1/public/config");
+    return Promise.resolve(new Response(JSON.stringify({ data: { payments: { paypal: { mode: "sandbox" } } }, meta: {} }), { status: 200 }));
+  } as typeof fetch;
+  try {
+    const client = new FundBridgeClient({ baseUrl: "http://api" }); // no fetch injected: the default path
+    const config = await client.publicConfig();
+    assert.equal(config.payments.paypal.mode, "sandbox");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("PayPal return before approval reports not_approved and stays pending", async () => {
   const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
     "POST /api/v1/donations/d1/capture": { status: 502, body: { error: { code: "PROVIDER_REQUEST_REJECTED", message: "x", details: { provider_status: 422, provider_issue: "ORDER_NOT_APPROVED" } } } },

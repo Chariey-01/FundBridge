@@ -28,7 +28,7 @@ FundBridge's feature-phone channel uses Africa's Talking (AT) for USSD sessions,
 | SMS shortcode / sender | Create a sandbox shortcode for inbound SMS | Buy or lease a shortcode for two-way SMS (`AT_SENDER_ID` = the shortcode). An alphanumeric sender ID is one-way and must be registered. |
 | Callback URLs | Set in the AT dashboard (below) | Same, on the production host |
 
-Africa's Talking does not document signatures on these callbacks. FundBridge therefore requires a shared secret in the URL (`?token=`), compared in constant time, plus an optional source-IP allowlist (`MESSAGING_ALLOWED_IPS`, with `TRUSTED_PROXY_HOPS` behind a proxy). Without `MESSAGING_CALLBACK_TOKEN`, every callback returns 503. Use HTTPS only, and do not enable access logs that record query strings.
+Africa's Talking does not document signatures on these callbacks. FundBridge therefore requires a shared secret in the URL (`?token=`), compared in constant time, plus an optional source-IP allowlist (`MESSAGING_ALLOWED_IPS`, with `TRUSTED_PROXY_HOPS` behind a proxy). Without `MESSAGING_CALLBACK_TOKEN`, or with one shorter than 24 characters, every callback returns 503 (`MESSAGING_NOT_CONFIGURED`). Generate it with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. Use HTTPS only, and do not enable access logs that record query strings.
 
 ## Configuration
 

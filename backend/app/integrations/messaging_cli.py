@@ -18,6 +18,8 @@ import click
 from flask import Flask, current_app
 from flask.cli import AppGroup
 
+from app.integrations.messaging.callback_auth import MIN_CALLBACK_TOKEN_LENGTH
+
 messaging_cli = AppGroup("fundbridge-messaging", help="SMS/USSD gateway operations.")
 
 
@@ -54,8 +56,9 @@ def config_findings() -> tuple[list[str], list[str], dict[str, str]]:
     token = _setting("MESSAGING_CALLBACK_TOKEN")
     if not token:
         errors.append("MESSAGING_CALLBACK_TOKEN is empty: USSD/SMS callbacks return 503.")
-    elif len(token) < 24:
-        errors.append("MESSAGING_CALLBACK_TOKEN is shorter than 24 characters; generate a long random value.")
+    elif len(token) < MIN_CALLBACK_TOKEN_LENGTH:
+        errors.append(f"MESSAGING_CALLBACK_TOKEN is shorter than {MIN_CALLBACK_TOKEN_LENGTH} characters; callbacks are "
+                      "refused until you generate a long random value.")
 
     base = str(_setting("PUBLIC_BASE_URL") or _setting("FRONTEND_ORIGIN") or "")
     parsed = urlparse(base)
