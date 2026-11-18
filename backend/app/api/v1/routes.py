@@ -14,7 +14,7 @@ from app.integrations.payouts.simulator import PayoutSimulator
 from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User, uuid_str)
 from app.security.auth import current_user, roles_allowed
 from app.services.ledger import release_payout, reserve_payout
-from app.services.payments import mark_donation_completed
+from app.services.payments import mark_donation_completed, reverse_donation
 from app.services.payouts import apply_provider_status
 
 api = Blueprint("api_v1", __name__)
@@ -265,11 +265,26 @@ def paypal_webhook():
     event_id=payload.get("id")
     if not event_id: raise ValueError("INVALID_WEBHOOK_EVENT")
     if ProviderWebhookEvent.query.filter_by(provider="paypal",event_id=event_id).first(): return "",204
-    if payload.get("event_type") == "PAYMENT.CAPTURE.COMPLETED":
-        resource=payload.get("resource",{}); order_id=resource.get("supplementary_data",{}).get("related_ids",{}).get("order_id"); d=Donation.query.filter_by(provider_order_id=order_id).first()
+    event_type=payload.get("event_type")
+    resource=payload.get("resource",{})
+    if not isinstance(resource,dict): raise ValueError("INVALID_WEBHOOK_EVENT")
+    if event_type == "PAYMENT.CAPTURE.COMPLETED":
+        order_id=resource.get("supplementary_data",{}).get("related_ids",{}).get("order_id"); d=Donation.query.filter_by(provider_order_id=order_id).first()
         if not d: raise ValueError("PAYMENT_ORDER_MISMATCH")
         mark_donation_completed(d, order_id=order_id, capture=resource)
-    db.session.add(ProviderWebhookEvent(provider="paypal",event_id=event_id,event_type=payload.get("event_type","unknown"),resource_id=payload.get("resource",{}).get("id"))); db.session.commit()
+    elif event_type in ("PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED"):
+        related=resource.get("supplementary_data",{}).get("related_ids",{})
+        if not isinstance(related,dict): raise ValueError("INVALID_WEBHOOK_EVENT")
+        order_id=related.get("order_id")
+        capture_id=related.get("capture_id") or (resource.get("id") if event_type == "PAYMENT.CAPTURE.REVERSED" else None)
+        d=Donation.query.filter_by(provider_order_id=order_id).first()
+        if not d: raise ValueError("PAYMENT_ORDER_MISMATCH")
+        provider_amount=resource.get("amount") or {}
+        if provider_amount.get("currency_code") != d.currency: raise ValueError("PAYMENT_CURRENCY_MISMATCH")
+        try: reversed_amount=Decimal(str(provider_amount.get("value")))
+        except (InvalidOperation, ValueError, TypeError): raise ValueError("PAYMENT_AMOUNT_MISMATCH")
+        reverse_donation(d,event_id=event_id,event_type=event_type,order_id=order_id,capture_id=capture_id,amount=reversed_amount)
+    db.session.add(ProviderWebhookEvent(provider="paypal",event_id=event_id,event_type=event_type or "unknown",resource_id=resource.get("id"))); db.session.commit()
     return "",204
 
 @api.get("/beneficiaries/me")

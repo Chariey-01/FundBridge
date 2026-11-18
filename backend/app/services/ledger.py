@@ -9,7 +9,12 @@ def available_funds(campaign_id, currency):
     """Completed donations less reservations/payouts. All values stay Decimal."""
     rows = db.session.query(FinancialLedgerEntry.entry_type, func.coalesce(func.sum(FinancialLedgerEntry.amount), 0)).filter_by(campaign_id=campaign_id, currency=currency).group_by(FinancialLedgerEntry.entry_type).all()
     totals = {kind: Decimal(str(amount)) for kind, amount in rows}
-    return totals.get("donation_completed", Decimal("0")) - totals.get("payout_reserved", Decimal("0")) + totals.get("payout_released", Decimal("0"))
+    raised = totals.get("donation_completed", Decimal("0"))
+    reversed_money = sum(
+        (totals.get(kind, Decimal("0")) for kind in ("donation_refunded", "donation_reversed", "chargeback")),
+        Decimal("0"),
+    )
+    return raised - reversed_money - totals.get("payout_reserved", Decimal("0")) + totals.get("payout_released", Decimal("0"))
 
 
 def reserve_payout(payout):
