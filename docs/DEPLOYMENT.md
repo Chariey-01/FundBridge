@@ -79,7 +79,7 @@ Configuration, the model decision and how to verify with a real key: [`docs/inte
 ```bash
 pip install -r backend/requirements-deploy.txt                  # requirements.txt + gunicorn
 cd backend
-flask --app run:app db upgrade                                  # every deploy; Alembic head: c3f1a9e7d2b4
+flask --app run:app db upgrade                                  # every deploy; Alembic head: e4a6c8d9f012
 gunicorn -w 1 --threads 8 -b 0.0.0.0:$PORT run:app              # start command
 ```
 

@@ -50,7 +50,7 @@ export interface DonationReturnView {
   presentation: StatusPresentation;
   donation: Donation;
   /** What the page offers next; "Try again" never creates a second donation (same donation id). */
-  actions: Array<"view_campaign" | "check_again" | "contact_support" | "return_to_paypal">;
+  actions: Array<"view_campaign" | "check_again" | "contact_support" | "return_to_paypal" | "donate_again">;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -63,13 +63,15 @@ export async function donationReturnPage(client: FundBridgeClient, donationId: s
   pollDelaysMs: number[] = [2000, 4000, 8000]): Promise<DonationReturnView> {
   let result = await client.completePayPalReturn(donationId);
   for (const delay of pollDelaysMs) {
-    if (result.outcome === "confirmed" || result.outcome === "not_approved" || result.presentation.final) break;
+    if (result.outcome === "confirmed" || result.outcome === "failed" || result.outcome === "not_approved"
+        || result.presentation.final) break;
     await sleep(delay);
     const donation = await client.getDonation(donationId);
     if (donation.status === "completed") result = { ...result, outcome: "confirmed", donation, presentation: { label: "Donation confirmed", tone: "success", final: true } };
   }
   const actions: DonationReturnView["actions"] =
     result.outcome === "confirmed" ? ["view_campaign"]
+    : result.outcome === "failed" ? ["donate_again", "view_campaign"]  // a new donation (new idempotency key)
     : result.outcome === "not_approved" && approvalUrl ? ["return_to_paypal", "check_again"]
     : result.outcome === "needs_review" ? ["contact_support"]
     : ["check_again"];

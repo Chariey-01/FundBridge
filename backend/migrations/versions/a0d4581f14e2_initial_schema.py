@@ -183,4 +183,9 @@ def downgrade():
     op.drop_table('beneficiary_profile')
     op.drop_table('user')
     op.drop_table('audit_log')
+    # PostgreSQL enum types are not dropped with their tables. Leaving them makes
+    # upgrade -> downgrade base -> upgrade fail with DuplicateObject.
+    if op.get_bind().dialect.name == "postgresql":
+        for enum_name in ("payoutstatus", "donationstatus", "campaignstatus", "role"):
+            op.execute(sa.text(f"DROP TYPE IF EXISTS {enum_name}"))
     # ### end Alembic commands ###

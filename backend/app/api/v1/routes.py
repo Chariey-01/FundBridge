@@ -4,9 +4,11 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, current_app, g, jsonify, request
 from flask_jwt_extended import create_access_token
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 
 from app.extensions import db
+from app.integrations.core_adapters import jwt_actor_resolver, raised_total
+from app.integrations.http_envelope import error
 from app.integrations.payments.paypal import PayPalSandboxAdapter
 from app.integrations.payouts.simulator import PayoutSimulator
 from app.models.core import (AuditLog, BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, Payout, PayoutStatus, ProviderWebhookEvent, Role, User, uuid_str)
@@ -32,9 +34,33 @@ def currency(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Z]{3}", value): raise ValueError("VALIDATION_ERROR")
     return value
 def fingerprint(value): return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",",":"), default=str).encode()).hexdigest()
-def serialize_campaign(x): return {"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
+def idempotency_lock(actor_id, key):
+    """Serialize same-actor idempotency keys on PostgreSQL before calling a provider."""
+    if db.session.get_bind().dialect.name != "postgresql": return
+    digest=hashlib.sha256(f"donation-order:{actor_id}:{key}".encode()).digest()
+    lock_id=int.from_bytes(digest[:8], byteorder="big", signed=True)
+    db.session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": lock_id})
+def serialize_campaign(x, *, include_beneficiary=False, include_raised=False, include_timestamps=False,
+                       include_submission_timestamp=False):
+    data={"id":x.id,"title":x.title,"slug":x.slug,"description":x.description,"category":x.category,"goal":{"amount":str(x.goal_amount),"currency":x.goal_currency},"status":x.status.value,"review_status":x.review_status}
+    if include_beneficiary: data["beneficiary_id"]=x.beneficiary_id
+    if include_raised: data["raised"]=raised_total(x.id, x.goal_currency).to_dict()
+    if include_timestamps:
+        data["created_at"]=x.created_at.isoformat(); data["updated_at"]=x.updated_at.isoformat()
+    if include_submission_timestamp:
+        # A submitted campaign is immutable until review; updated_at is the timestamp of
+        # the submission state transition and avoids inventing a separate financial field.
+        data["submitted_at"]=x.updated_at.isoformat()
+    return data
 def serialize_donation(x): return {"id":x.id,"campaign_id":x.campaign_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
 def serialize_payout(x): return {"id":x.id,"campaign_id":x.campaign_id,"beneficiary_id":x.beneficiary_id,"amount":str(x.amount),"currency":x.currency,"status":x.status.value,"provider":x.provider}
+
+def approval_url(order):
+    """Return only PayPal's checkout continuation URL, never a client supplied URL."""
+    for link in order.get("links", []) if isinstance(order, dict) else []:
+        if isinstance(link, dict) and link.get("rel") in ("approve", "payer-action") and isinstance(link.get("href"), str):
+            return link["href"]
+    return None
 
 @api.get("/public/config")
 def public_config():
@@ -51,7 +77,11 @@ def register():
 
 @api.post("/auth/login")
 def login():
-    data=body(); identity=data.get("email") or data.get("phone_number"); password=data.get("password", "")
+    data=body(); email=data.get("email"); phone=data.get("phone_number"); password=data.get("password", "")
+    # A missing identity must not turn into ``email IS NULL OR phone_number IS NULL``.
+    # Keep the same generic 401 response as every other invalid credential attempt.
+    identity = email.strip() if isinstance(email, str) and email.strip() else phone.strip() if isinstance(phone, str) and phone.strip() else None
+    if identity is None: raise PermissionError("INVALID_CREDENTIALS")
     user=User.query.filter((User.email==identity) | (User.phone_number==identity)).first()
     if not user or user.status != "active" or not user.check_password(password): raise PermissionError("INVALID_CREDENTIALS")
     return ok({"access_token":create_access_token(identity=user.id),"user":{"id":user.id,"role":user.role.value}})
@@ -64,23 +94,25 @@ def me():
 def list_campaigns():
     q=Campaign.query.filter_by(status=CampaignStatus.published)
     if request.args.get("category"): q=q.filter_by(category=request.args["category"])
-    # Plain keyword search (no AI dependency): case-insensitive match on title or description.
+    # Plain keyword search (no AI dependency), composed with the exact category filter.
     term=(request.args.get("q") or "").strip()[:100]
     if term:
         pattern="%"+term.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")+"%"
-        q=q.filter(Campaign.title.ilike(pattern,escape="\\") | Campaign.description.ilike(pattern,escape="\\"))
-    if request.args.get("q"):
-        term=f"%{request.args['q'].strip()}%"
-        q=q.filter(or_(Campaign.title.ilike(term), Campaign.description.ilike(term), Campaign.category.ilike(term)))
+        q=q.filter(or_(Campaign.title.ilike(pattern,escape="\\"), Campaign.description.ilike(pattern,escape="\\"), Campaign.category.ilike(pattern,escape="\\")))
     return ok([serialize_campaign(x) for x in q.order_by(Campaign.published_at.desc()).limit(50)])
 
 @api.get("/campaigns/<campaign_id>")
 def campaign_detail(campaign_id):
     x=Campaign.query.get_or_404(campaign_id)
+    actor=jwt_actor_resolver()
+    privileged=actor is not None and (actor.id == x.creator_id or actor.role in (Role.reviewer.value,Role.admin.value))
     if x.status != CampaignStatus.published:
         u=current_user()
         if u.id != x.creator_id and u.role not in (Role.reviewer,Role.admin): raise PermissionError("FORBIDDEN")
-    return ok(serialize_campaign(x))
+        privileged=True
+    # Public detail exposes only public campaign facts and ledger-backed raised total.
+    # Beneficiary identifiers are retained only for the creator and review staff.
+    return ok(serialize_campaign(x,include_beneficiary=privileged,include_raised=True))
 
 @api.post("/campaigns")
 @roles_allowed(Role.creator, Role.admin)
@@ -92,8 +124,14 @@ def create_campaign():
     x=Campaign(creator_id=g.current_user.id,beneficiary_id=beneficiary.id,title=title,slug=slug,description=description,category=data["category"],goal_amount=money(data.get("goal_amount")),goal_currency=currency(data.get("goal_currency")))
     # Flush first so the generated campaign id exists before the audit row is inserted.
     # Both writes remain in one transaction and roll back together on failure.
-    db.session.add(x); db.session.flush()
-    db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id)); db.session.commit(); return ok(serialize_campaign(x),201)
+    try:
+        db.session.add(x); db.session.flush()
+        db.session.add(AuditLog(actor_id=g.current_user.id,action="campaign.created",resource_type="campaign",resource_id=x.id))
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return error("SLUG_ALREADY_EXISTS","A campaign already uses this slug.",409)
+    return ok(serialize_campaign(x,include_beneficiary=True),201)
 
 @api.patch("/campaigns/<campaign_id>")
 def update_campaign(campaign_id):
@@ -123,10 +161,33 @@ def review_campaign(campaign_id):
     db.session.add(AuditLog(actor_id=g.current_user.id,action=f"campaign.review_{decision}",resource_type="campaign",resource_id=campaign.id))
     db.session.commit(); return ok(serialize_campaign(campaign))
 
+@api.get("/campaigns/review-queue")
+@roles_allowed(Role.reviewer, Role.admin)
+def campaign_review_queue():
+    try:
+        page=max(1,int(request.args.get("page",1))); page_size=min(100,max(1,int(request.args.get("page_size",20))))
+    except ValueError: raise ValueError("VALIDATION_ERROR")
+    query=Campaign.query.filter_by(status=CampaignStatus.submitted,review_status="pending").order_by(Campaign.created_at.asc())
+    total=query.count(); items=query.offset((page-1)*page_size).limit(page_size).all()
+    return ok([serialize_campaign(item,include_beneficiary=True,include_raised=True,include_submission_timestamp=True) for item in items],meta={"page":page,"page_size":page_size,"total":total})
+
 @api.get("/me/campaigns")
 def my_campaigns():
     u=current_user()
-    return ok([serialize_campaign(x) for x in Campaign.query.filter_by(creator_id=u.id).order_by(Campaign.created_at.desc()).all()])
+    return ok([serialize_campaign(x,include_beneficiary=True) for x in Campaign.query.filter_by(creator_id=u.id).order_by(Campaign.created_at.desc()).all()])
+
+@api.get("/beneficiaries/me/campaigns")
+@roles_allowed(Role.beneficiary)
+def beneficiary_campaigns():
+    try:
+        page=max(1,int(request.args.get("page",1))); page_size=min(100,max(1,int(request.args.get("page_size",20))))
+    except ValueError: raise ValueError("VALIDATION_ERROR")
+    profile=BeneficiaryProfile.query.filter_by(user_id=g.current_user.id).first()
+    if profile is None:
+        return ok([],meta={"page":page,"page_size":page_size,"total":0})
+    query=Campaign.query.filter_by(beneficiary_id=profile.id).order_by(Campaign.created_at.desc(),Campaign.id.desc())
+    total=query.count(); items=query.offset((page-1)*page_size).limit(page_size).all()
+    return ok([serialize_campaign(item,include_beneficiary=True,include_raised=True,include_timestamps=True) for item in items],meta={"page":page,"page_size":page_size,"total":total})
 
 @api.post("/beneficiaries")
 @roles_allowed(Role.agent,Role.admin)
@@ -140,8 +201,6 @@ def assisted_beneficiary():
         if BeneficiaryProfile.query.filter_by(user_id=user_id).first(): raise ValueError("BENEFICIARY_PROFILE_EXISTS")
     x=BeneficiaryProfile(user_id=user_id,display_name=data["display_name"],phone_number=data["phone_number"],country_code=data["country_code"],preferred_language=data.get("preferred_language","en"),payout_destination_reference=data.get("payout_destination_reference"))
     db.session.add(x); db.session.flush(); db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id,metadata_json={"linked_user":bool(user_id)}))
-    db.session.add(x); db.session.flush()
-    db.session.add(AuditLog(actor_id=g.current_user.id,action="beneficiary.onboarded",resource_type="beneficiary",resource_id=x.id))
     db.session.commit(); return ok({"id":x.id,"verification_status":x.verification_status},201)
 
 @api.post("/donations/orders")
@@ -152,10 +211,23 @@ def donation_order():
     data=body(); key=request.headers.get("Idempotency-Key")
     if not key: raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
     request_fingerprint=fingerprint({"campaign_id":data.get("campaign_id"),"amount":data.get("amount"),"currency":data.get("currency"),"provider":"paypal"})
+    idempotency_lock(donor.id,key)
+    # Re-check after acquiring the PostgreSQL transaction lock: only the holder may
+    # create the external PayPal order for this actor/key pair.
     existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
     if existing:
         if existing.idempotency_fingerprint != request_fingerprint: raise ValueError("IDEMPOTENCY_KEY_REUSED")
-        return ok(serialize_donation(existing))
+        # A retry of the same pending checkout must continue the existing PayPal order,
+        # never create another donation/order.  Re-read and validate provider state before
+        # returning its checkout link; a missing/unconfigured provider still gets the safe
+        # idempotent donation response without a link.
+        response=serialize_donation(existing)
+        if (existing.status == DonationStatus.pending and existing.provider_order_id
+                and current_app.config.get("PAYPAL_CLIENT_ID") and current_app.config.get("PAYPAL_CLIENT_SECRET")):
+            order=PayPalSandboxAdapter(current_app.config).get_order(existing.provider_order_id)
+            PayPalSandboxAdapter._validate_order_representation(order, existing)
+            response["approval_url"]=approval_url(order)
+        return ok(response)
     campaign=Campaign.query.get(data.get("campaign_id"))
     if not campaign or campaign.status != CampaignStatus.published: raise ValueError("CAMPAIGN_NOT_AVAILABLE")
     # id is assigned now (not at INSERT) because PayPal must receive it as purchase_units[0].reference_id;
@@ -177,7 +249,14 @@ def donation_order():
     if not order_id or unit.get("reference_id") != donation.id or provider_amount.get("currency_code") != donation.currency or provider_value != Decimal(donation.amount):
         db.session.rollback(); raise ValueError("PAYMENT_ORDER_MISMATCH")
     donation.provider_order_id=order_id
-    db.session.add(donation); db.session.commit(); return ok({**serialize_donation(donation),"approval_url":next((l["href"] for l in order.get("links",[]) if l.get("rel")=="approve"),None)},201)
+    try:
+        db.session.add(donation); db.session.commit()
+    except IntegrityError:
+        # Defensive fallback for a historical/externally-created uniqueness race.
+        db.session.rollback(); existing=Donation.query.filter_by(donor_id=donor.id,idempotency_key=key).first()
+        if existing and existing.idempotency_fingerprint == request_fingerprint: return ok(serialize_donation(existing))
+        raise ValueError("IDEMPOTENCY_KEY_REUSED")
+    return ok({**serialize_donation(donation),"approval_url":approval_url(order)},201)
 
 @api.post("/webhooks/paypal")
 def paypal_webhook():
@@ -244,6 +323,12 @@ def reconcile_donation(donation_id):
     if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if donation.status != DonationStatus.pending or not donation.provider_order_id: raise ValueError("INVALID_DONATION_TRANSITION")
     result=PayPalSandboxAdapter(current_app.config).get_order(donation.provider_order_id)
+    # Do provider I/O before locking, then serialize the state transition and use a
+    # fresh row. Waiting requests observe the committed completed/failed result.
+    # ``donation`` was read before provider I/O. Refresh the identity-map object
+    # after waiting on the lock so concurrent callers see the winner's commit.
+    donation=db.session.query(Donation).filter_by(id=donation_id).with_for_update().populate_existing().one()
+    if donation.status == DonationStatus.completed: return ok(serialize_donation(donation))
     if result.get("status") == "COMPLETED":
         unit=(result.get("purchase_units") or [{}])[0]
         if unit.get("reference_id") != donation.id: raise ValueError("PAYMENT_ORDER_MISMATCH")
@@ -291,12 +376,19 @@ def request_payout():
 @api.post("/payouts/<payout_id>/review")
 @roles_allowed(Role.reviewer,Role.admin)
 def review_payout(payout_id):
-    p=Payout.query.get_or_404(payout_id); data=body(); decision=data.get("decision")
-    if p.status != PayoutStatus.requested: raise ValueError("INVALID_PAYOUT_TRANSITION")
-    if p.requested_by == g.current_user.id: raise PermissionError("SELF_APPROVAL_FORBIDDEN")
+    data=body(); decision=data.get("decision")
+    if decision not in ("approve", "reject"): raise ValueError("VALIDATION_ERROR")
+    # Serialize reviewers as well as payout requests.  The state check occurs after
+    # the row lock, so a concurrent approve/reject cannot both transition/release.
+    p=db.session.query(Payout).filter_by(id=payout_id).with_for_update().one_or_none()
+    if p is None: abort(404)
+    db.session.query(Campaign).filter_by(id=p.campaign_id).with_for_update().one()
+    if p.status != PayoutStatus.requested:
+        db.session.rollback(); raise ValueError("INVALID_PAYOUT_TRANSITION")
+    if p.requested_by == g.current_user.id:
+        db.session.rollback(); raise PermissionError("SELF_APPROVAL_FORBIDDEN")
     if decision == "reject": p.status=PayoutStatus.rejected; release_payout(p,"rejected")
-    elif decision == "approve": p.status=PayoutStatus.approved_for_submission
-    else: raise ValueError("VALIDATION_ERROR")
+    else: p.status=PayoutStatus.approved_for_submission
     db.session.add(AuditLog(actor_id=g.current_user.id,action=f"payout.{decision}",resource_type="payout",resource_id=p.id)); db.session.commit(); return ok(serialize_payout(p))
 
 @api.get("/payouts")

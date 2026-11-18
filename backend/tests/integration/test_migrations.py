@@ -11,6 +11,7 @@ Runs on SQLite always and on PostgreSQL when ``POSTGRES_TEST_DATABASE_URL`` is s
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,23 @@ def _script() -> ScriptDirectory:
 def test_single_alembic_head():
     heads = _script().get_heads()
     assert len(heads) == 1, f"multiple Alembic heads {heads}; chain the newest migration after the other head"
+
+
+def test_upgrade_keeps_application_access_logger_enabled(tmp_path):
+    """Alembic logging must not disable the application's PII-safe access logger."""
+    from flask_migrate import upgrade
+
+    url, app = _app_for("sqlite", tmp_path)
+    logger = logging.getLogger("fundbridge.http")
+    previous = logger.disabled
+    logger.disabled = False
+    with app.app_context():
+        try:
+            upgrade(directory=str(MIGRATIONS))
+            assert logger.disabled is False
+        finally:
+            _dispose(url)
+            logger.disabled = previous
 
 
 def _reset(url: str) -> None:
@@ -93,7 +111,7 @@ DEFECT_M2 = ("DEFECT M-2: the initial migration's downgrade drops tables but not
              "with DuplicateObject")
 
 
-@pytest.mark.parametrize("backend", ["sqlite", pytest.param("postgresql", marks=pytest.mark.xfail(strict=True, reason=DEFECT_M2))])
+@pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
 def test_full_downgrade_then_upgrade(backend, tmp_path):
     from flask_migrate import downgrade, upgrade
 
@@ -173,7 +191,6 @@ DEFECT_M1B = ("DEFECT M-1b: a database built from the original a0d4581f14e2 (bef
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "postgresql"])
-@pytest.mark.xfail(strict=True, reason=DEFECT_M1B)
 def test_upgrade_from_original_initial_schema_drops_global_key_uniqueness(backend, tmp_path):
     from flask_migrate import upgrade
 

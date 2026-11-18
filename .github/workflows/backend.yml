@@ -1,0 +1,92 @@
+name: Backend tests
+
+# PostgreSQL-backed backend CI: apply every migration to an empty database, check that the models
+# match the migrations, then run the complete backend suite (unit, integration, PostgreSQL locking
+# and concurrency, migration up/down, and the live gunicorn end-to-end journeys including the
+# TypeScript API client). Nothing here contacts PayPal, OpenAI or Africa's Talking: the e2e suite
+# uses local provider test doubles.
+
+on:
+  # No path filters: these checks are meant to be required, and a required check that never
+  # starts would block the merge.
+  pull_request:
+  push:
+    branches: [main, feat/backend-core]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Migrations and full backend suite (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fundbridge
+          POSTGRES_PASSWORD: fundbridge
+          POSTGRES_DB: fundbridge_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fundbridge -d fundbridge_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PGPASSWORD: fundbridge
+      # Disposable databases. Each suite drops and recreates the public schema of its own database.
+      POSTGRES_TEST_DATABASE_URL: postgresql+psycopg://fundbridge:fundbridge@localhost:5432/fundbridge_test
+      E2E_DATABASE_URL: postgresql+psycopg://fundbridge:fundbridge@localhost:5432/fundbridge_e2e
+      MIGRATION_DATABASE_URL: postgresql+psycopg://fundbridge:fundbridge@localhost:5432/fundbridge_migrate
+      SECRET_KEY: ci-not-a-production-secret
+      JWT_SECRET_KEY: ci-not-a-production-secret-with-at-least-thirty-two-bytes
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+
+      - name: Install the backend as deployed (requirements + gunicorn)
+        run: pip install -r requirements-deploy.txt
+
+      - name: Install the TypeScript client toolchain
+        working-directory: contracts
+        run: npm ci
+
+      - name: Create the e2e and migration databases
+        run: |
+          psql -h localhost -U fundbridge -d fundbridge_test -v ON_ERROR_STOP=1 -c "CREATE DATABASE fundbridge_e2e"
+          psql -h localhost -U fundbridge -d fundbridge_test -v ON_ERROR_STOP=1 -c "CREATE DATABASE fundbridge_migrate"
+
+      - name: Apply all migrations to an empty PostgreSQL database
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+        run: |
+          flask --app run:app db upgrade -d migrations
+          flask --app run:app db current -d migrations
+          flask --app run:app db heads -d migrations
+
+      - name: Check that the models match the migrations
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+        run: flask --app run:app db check -d migrations
+
+      - name: Run the complete backend suite
+        run: python -m pytest tests -q -rs

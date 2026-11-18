@@ -412,10 +412,6 @@ def test_server_logs_hold_no_secrets_or_phone_numbers(live):
     assert "unhandled error" not in log, "a journey hit an unhandled server error"
 
 
-@pytest.mark.xfail(strict=True, reason="DEFECT C-4b: PayPal's create-order returns a minimal body (id, status, links) "
-                                       "unless the request sends 'Prefer: return=representation'; the canonical adapter "
-                                       "does not send it but b7bf45b requires purchase_units in the response, so every "
-                                       "real order fails with 400 PAYMENT_ORDER_MISMATCH")
 def test_order_creation_against_paypal_default_response(live):
     world = _published_campaign(live, title_word="Minimal")
     donor = live.account("donor")
@@ -426,4 +422,3 @@ def test_order_creation_against_paypal_default_response(live):
     finally:
         live.paypal.assume_representation = True
     assert res.status_code == 201, res.text
-

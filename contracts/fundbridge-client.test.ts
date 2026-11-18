@@ -50,6 +50,15 @@ test("PayPal return is confirmed only when the server re-read says completed", a
   assert.deepEqual(seen, ["POST /api/v1/donations/d1/capture", "GET /api/v1/donations/d1"]);
 });
 
+test("client passes a string URL to injected fetch implementations", async () => {
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    assert.equal(typeof input, "string");
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  }) as typeof fetch;
+  const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fetchImpl, token: "test" });
+  assert.deepEqual(await client.findCampaignBeneficiaries("Amina"), []);
+});
+
 test("PayPal return before approval reports not_approved and stays pending", async () => {
   const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
     "POST /api/v1/donations/d1/capture": { status: 502, body: { error: { code: "PROVIDER_REQUEST_REJECTED", message: "x", details: { provider_status: 422, provider_issue: "ORDER_NOT_APPROVED" } } } },
@@ -91,6 +100,17 @@ test("a timeout is reconciled; a failed reconcile leaves the donation pending, n
   assert.equal(result.presentation.tone, "pending");
 });
 
+test("a reconcile that records a declined capture is reported as failed, not as still checking", async () => {
+  const client = new FundBridgeClient({ baseUrl: "http://api", fetch: fakeFetch({
+    "POST /api/v1/donations/d1/capture": { status: 503, body: { error: { code: "PROVIDER_UNAVAILABLE", message: "x", details: {} } } },
+    "POST /api/v1/donations/d1/reconcile": donation("failed"),
+    "GET /api/v1/donations/d1": donation("failed"),
+  }) });
+  const result = await client.completePayPalReturn("d1");
+  assert.equal(result.outcome, "failed");
+  assert.equal(result.presentation.tone, "failure");
+});
+
 test("an expired session triggers onSessionInvalid once and throws", async () => {
   const calls: string[] = [];
   const client = new FundBridgeClient({ baseUrl: "http://api", token: "old",
@@ -102,7 +122,7 @@ test("an expired session triggers onSessionInvalid once and throws", async () =>
 
 test("simulated and unverified channels are labelled", () => {
   const modes = channelModes({
-    ai: { provider: "fallback", model: null, mode: "fallback_only", features: { campaign_draft: "template_fallback", translate: "unavailable", beneficiary_assistant: "rule_based_fallback", campaign_search: "keyword_fallback" }, supported_languages: {} as never, model_verified: false, last_success_at: null, last_error: null },
+    ai: { provider: "fallback", model: null, mode: "fallback_only", features: { campaign_draft: "template_fallback", translate: "unavailable", beneficiary_assistant: "rule_based_fallback", campaign_search: "keyword_fallback", status_explanation: "verified_text_only" }, daily_request_limit: 2000, supported_languages: {} as never, model_verified: false, last_success_at: null, last_error: null },
     messaging: { sms: { provider: "simulator", mode: "simulated", delivery_confirmed: false }, ussd: { service_code: "*384*123#", callback_configured: true, live_shortcode_verified: false }, simulator_enabled: true, notifications_enabled: true, sms_assistant: "rule_based" },
   }, "simulator");
   assert.equal(modes.sms.mode, "simulated");

@@ -39,10 +39,28 @@ from .http_envelope import error
 
 log = logging.getLogger("fundbridge.http")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{8,64}")
+_WERKZEUG_REQUEST_QUERY = re.compile(r"(\b(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+\S+)\?\S+(\s+HTTP/)")
 
 LOGIN = "/api/v1/auth/login"
 REGISTER = "/api/v1/auth/register"
 DONATION_ORDER = "/api/v1/donations/orders"
+
+
+class _WerkzeugQueryRedactor(logging.Filter):
+    """Keep query strings (which can carry callback tokens or PII) out of access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        rendered = record.getMessage()
+        redacted = _WERKZEUG_REQUEST_QUERY.sub(r"\1?[REDACTED]\2", rendered)
+        if redacted != rendered:
+            record.msg, record.args = redacted, ()
+        return True
+
+
+def _install_werkzeug_query_redactor() -> None:
+    logger = logging.getLogger("werkzeug")
+    if not any(isinstance(item, _WerkzeugQueryRedactor) for item in logger.filters):
+        logger.addFilter(_WerkzeugQueryRedactor())
 
 
 class FailureWindow:
@@ -102,6 +120,7 @@ def _login_identity() -> str:
 
 
 def init_hardening(app: Flask) -> None:
+    _install_werkzeug_query_redactor()
     enabled = str(app.config.get("RATE_LIMITS_ENABLED", "true")).lower() != "false"
     login_ip = SlidingWindowRateLimiter(_int(app, "AUTH_LOGIN_LIMIT_PER_IP_PER_MINUTE", 30), 60)
     login_failures = FailureWindow(_int(app, "AUTH_LOGIN_FAILURES_PER_ACCOUNT", 5),
