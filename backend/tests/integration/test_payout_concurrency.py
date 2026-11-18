@@ -11,12 +11,13 @@ from __future__ import annotations
 import os
 import threading
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
 from app import create_app
 from app.extensions import db
-from app.models.core import BeneficiaryProfile, Campaign, CampaignStatus, FinancialLedgerEntry, Payout, PayoutStatus, Role
+from app.models.core import BeneficiaryProfile, Campaign, CampaignStatus, Donation, DonationStatus, FinancialLedgerEntry, Payout, PayoutStatus, Role
 from app.services.ledger import available_funds
 
 from .conftest import BASE_CONFIG, PASSWORD
@@ -161,3 +162,47 @@ def test_concurrent_payout_approval_and_rejection_are_atomic_postgres():
         assert released == 1 and available == Decimal("100.00")
     else:
         assert released == 0 and available == Decimal("0.00")
+
+
+@pytest.mark.skipif(not PG_URL, reason="set POSTGRES_TEST_DATABASE_URL to an isolated PostgreSQL database")
+def test_refund_debit_prevents_new_reservations_on_postgres():
+    """PostgreSQL regression for FIN-1: signed refund events remove spendable balance."""
+    app = create_app({**BASE_CONFIG, "SQLALCHEMY_DATABASE_URI": PG_URL})
+    with app.app_context():
+        db.drop_all(); db.create_all()
+        from .conftest import make_user
+        creator = make_user("refund-pg-creator@example.test", Role.creator)
+        beneficiary_user = make_user("refund-pg-beneficiary@example.test", Role.beneficiary)
+        beneficiary = BeneficiaryProfile(user_id=beneficiary_user.id, display_name="Refund Amina", phone_number="0712345671",
+                                         country_code="KE", verification_status="verified", payout_destination_reference="tok")
+        db.session.add(beneficiary); db.session.flush()
+        campaign = Campaign(creator_id=creator.id, beneficiary_id=beneficiary.id, title="Refund PG campaign",
+                            slug="refund-pg-campaign", description="x" * 30, category="education",
+                            goal_amount=Decimal("100"), goal_currency="USD", status=CampaignStatus.published)
+        db.session.add(campaign); db.session.flush()
+        donation = Donation(campaign_id=campaign.id, amount=Decimal("100"), currency="USD", provider="paypal",
+                            provider_order_id="refund-pg-order", idempotency_key="refund-pg-donation", status=DonationStatus.pending)
+        db.session.add(donation); db.session.flush()
+        from app.services.payments import mark_donation_completed
+        mark_donation_completed(donation, order_id=donation.provider_order_id,
+                                capture={"id": "refund-pg-capture", "status": "COMPLETED", "amount": {"currency_code": "USD", "value": "100.00"}})
+        db.session.commit()
+        campaign_id, beneficiary_id, donation_id = campaign.id, beneficiary.id, donation.id
+
+    event = {"id": "refund-pg-event", "event_type": "PAYMENT.CAPTURE.REVERSED", "resource": {
+        "id": "refund-pg-resource", "amount": {"currency_code": "USD", "value": "100.00"},
+        "supplementary_data": {"related_ids": {"order_id": "refund-pg-order", "capture_id": "refund-pg-capture"}},
+    }}
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.verify_webhook", return_value=True):
+        response = app.test_client().post("/api/v1/webhooks/paypal", json=event)
+    assert response.status_code == 204, response.get_json()
+    with app.app_context():
+        assert db.session.get(Donation, donation_id).status == DonationStatus.refunded
+        assert available_funds(campaign_id, "USD") == Decimal("0.00")
+        payout = Payout(campaign_id=campaign_id, beneficiary_id=beneficiary_id, amount=Decimal("1.00"), currency="USD",
+                        destination_type="wallet", destination_reference="tok", provider="simulator", idempotency_key="refund-pg-payout")
+        db.session.add(payout); db.session.flush()
+        from app.services.ledger import reserve_payout
+        with pytest.raises(ValueError, match="INSUFFICIENT_AVAILABLE_FUNDS"):
+            reserve_payout(payout)
+        db.session.rollback(); db.session.remove(); db.drop_all()

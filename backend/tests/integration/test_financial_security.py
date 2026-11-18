@@ -9,6 +9,7 @@ Tests commented "Was DEFECT ..." are regressions for defects that have been fixe
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -20,6 +21,7 @@ from app.models.core import (
     FinancialLedgerEntry,
     Payout,
     PayoutStatus,
+    ProviderWebhookEvent,
     Role,
 )
 from app.services.ledger import available_funds
@@ -126,6 +128,49 @@ def test_capture_of_someone_elses_donation_forbidden(client, seeded):
     assert res.status_code == 403
 
 
+def _refund_event(donation, event_id, amount, event_type="PAYMENT.CAPTURE.REFUNDED"):
+    return {
+        "id": event_id,
+        "event_type": event_type,
+        "resource": {
+            "id": f"refund-resource-{event_id}",
+            "amount": {"currency_code": donation.currency, "value": amount},
+            "supplementary_data": {"related_ids": {
+                "order_id": donation.provider_order_id,
+                "capture_id": donation.provider_capture_id,
+            }},
+        },
+    }
+
+
+def test_unsigned_refund_webhook_cannot_debit_the_ledger(client, seeded):
+    donation = fund(seeded["campaign"], "20.00", "unsigned-refund")
+    response = client.post("/api/v1/webhooks/paypal", json=_refund_event(donation, "unsigned-refund-event", "20.00"))
+    assert response.status_code == 403
+    assert db.session.get(Donation, donation.id).status == DonationStatus.completed
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("20.00")
+    assert ProviderWebhookEvent.query.filter_by(event_id="unsigned-refund-event").count() == 0
+
+
+def test_signed_refund_is_idempotent_and_out_of_order_delivery_retries(client, seeded):
+    donation = add_pending_donation(seeded["campaign"], "20.00", "out-of-order")
+    event = _refund_event(donation, "refund-out-of-order", "20.00")
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.verify_webhook", return_value=True):
+        # A refund that arrives before its capture is rejected and deliberately not deduplicated.
+        assert client.post("/api/v1/webhooks/paypal", json=event).status_code == 400
+    assert ProviderWebhookEvent.query.filter_by(event_id="refund-out-of-order").count() == 0
+    complete(donation, "capture-out-of-order")
+    db.session.commit()
+    event = _refund_event(donation, "refund-out-of-order", "20.00")
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.verify_webhook", return_value=True):
+        assert client.post("/api/v1/webhooks/paypal", json=event).status_code == 204
+        assert client.post("/api/v1/webhooks/paypal", json=event).status_code == 204
+    assert db.session.get(Donation, donation.id).status == DonationStatus.refunded
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("0.00")
+    assert FinancialLedgerEntry.query.filter_by(entry_type="donation_refunded").count() == 1
+    assert ProviderWebhookEvent.query.filter_by(event_id="refund-out-of-order").count() == 1
+
+
 # -------------------------------------------------------------------- payouts
 
 
@@ -163,6 +208,31 @@ def test_rejected_payout_releases_reservation(client, seeded):
     again = client.post(f"/api/v1/payouts/{payout_id}/review", json={"decision": "approve"},
                         headers=auth(client, "reviewer@example.test"))
     assert again.status_code == 400  # rejected is terminal
+
+
+def test_refund_keeps_existing_payout_states_and_never_claims_money_was_recovered(client, seeded):
+    donation = fund(seeded["campaign"], "100.00", "reserved-then-refunded")
+    states = (PayoutStatus.approved_for_submission, PayoutStatus.pending_confirmation, PayoutStatus.succeeded)
+    payouts = []
+    for index, status in enumerate(states):
+        payout = Payout(campaign_id=seeded["campaign"].id, beneficiary_id=seeded["beneficiary"].id,
+                        requested_by=seeded["beneficiary_user"].id, amount=Decimal("20.00"), currency="USD",
+                        destination_type="wallet", destination_reference=f"token-{index}", provider="simulator",
+                        idempotency_key=f"existing-{index}", status=status)
+        db.session.add(payout); db.session.flush()
+        db.session.add(FinancialLedgerEntry(campaign_id=payout.campaign_id, payout_id=payout.id,
+                                            entry_type="payout_reserved", amount=payout.amount, currency="USD",
+                                            reference=f"existing-reservation-{index}"))
+        payouts.append(payout)
+    db.session.commit()
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("40.00")
+    with patch("app.api.v1.routes.PayPalSandboxAdapter.verify_webhook", return_value=True):
+        assert client.post("/api/v1/webhooks/paypal", json=_refund_event(donation, "refund-after-payouts", "100.00")).status_code == 204
+    assert [db.session.get(Payout, payout.id).status for payout in payouts] == list(states)
+    assert FinancialLedgerEntry.query.filter_by(entry_type="payout_released").count() == 0
+    assert available_funds(seeded["campaign"].id, "USD") == Decimal("-60.00")
+    response = request_payout(client, seeded, "1.00", "after-refund")
+    assert response.status_code == 400 and response.get_json()["error"]["code"] == "INSUFFICIENT_AVAILABLE_FUNDS"
 
 
 def test_beneficiary_cannot_request_payout_for_someone_else(client, seeded):
